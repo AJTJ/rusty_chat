@@ -4,22 +4,34 @@ use actix_web_actors::ws;
 // use mysql::prelude::*;
 // use mysql::*;
 
-struct MyWs;
+struct MessageBlock {
+    user_name: String,
+    user_id: String,
+    message: String,
+    message_id: String,
+}
 
-impl Actor for MyWs {
+struct TheWebSocket;
+
+impl Actor for TheWebSocket {
     type Context = ws::WebsocketContext<Self>;
 }
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
+fn text_handler(text: &String) -> &str {
+    match text.as_str() {
+        "hey" => "hello",
+        "dog" => "cat",
+        x => x,
+    }
+}
+
+// let active_messages: Vec<MessageBlock> = Vec::new();
+
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for TheWebSocket {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        println!("msg: {:?}", msg);
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Text(text)) => match text.as_str() {
-                "hey" => ctx.text("hello"),
-                "dog" => ctx.text("cat"),
-                x => ctx.text(x),
-            },
+            Ok(ws::Message::Text(text)) => ctx.text(text_handler(&text)),
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             _ => (),
         }
@@ -27,8 +39,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for MyWs {
 }
 
 async fn index(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    let resp = ws::start(MyWs {}, &req, stream);
-    println!("XXX {:?}", resp);
+    let resp = ws::start(TheWebSocket {}, &req, stream);
+    println!("{:?}", resp);
     resp
 }
 
@@ -39,5 +51,3 @@ async fn main() -> std::io::Result<()> {
         .run()
         .await
 }
-
-// some words again
