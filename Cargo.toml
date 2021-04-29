@@ -10,4 +10,6 @@ edition = "2018"
 actix = "0.10"
 actix-web = "3"
 actix-web-actors = "3.0.0"
-mysql = "20.1.0"
+serde_json = "1.0"
+sqlx = { version = "0.4.2", features = [ "runtime-actix-rustls", "sqlite" ] }
+# tokio = { version = "1.0", features = ["full"] }
