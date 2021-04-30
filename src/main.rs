@@ -1,18 +1,11 @@
 use actix::{Actor, StreamHandler};
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
+use chrono;
+use dotenv::dotenv;
 use serde_json::json;
 use sqlx::sqlite::SqlitePoolOptions;
 use sqlx::FromRow;
-
-// USAGE NOTES
-
-// struct MessageBlock {
-//     user_name: String,
-//     user_id: String,
-//     message: String,
-//     message_id: String,
-// }
 
 struct TheWebSocket;
 
@@ -47,8 +40,14 @@ async fn index(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, E
     resp
 }
 
+//db things
+// basic message
+// 666, 123, 456, "A simple message", "2013-10-07 08:23:19.120";
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    dotenv().ok();
+
     let test_data = json!({
         "hello": "this"
     });
@@ -61,19 +60,33 @@ async fn main() -> std::io::Result<()> {
         .await
         .expect("pool FAILURE");
 
-    #[derive(FromRow, Debug)]
+    #[derive(Debug)]
     struct User {
-        id: i64,
-        name: String,
+        id: Option<i64>,
+        name: Option<String>,
     }
 
-    let all_users: Vec<User> = sqlx::query_as("SELECT * from user")
+    #[derive(Debug)]
+    struct Message {
+        id: Option<i64>,
+        user_id: i64,
+        room_id: i64,
+        message: String,
+        time: chrono::NaiveDateTime,
+    }
+    #[derive(Debug)]
+    struct Room {
+        id: Option<i64>,
+        name: Option<String>,
+    }
+
+    let all_messages: Vec<Message> = sqlx::query_as!(Message, "SELECT * from message")
         .fetch_all(&pool)
         .await
         .expect("dang thing");
 
     println!("pool: {:?}", pool);
-    println!("all_users: {:?}", all_users);
+    println!("all_messages: {:?}", all_messages);
 
     HttpServer::new(|| App::new().route("/ws/", web::get().to(index)))
         .bind("127.0.0.1:8081")?
