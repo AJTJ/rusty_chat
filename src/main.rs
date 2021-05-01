@@ -5,7 +5,8 @@ use chrono;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::sqlite::SqlitePoolOptions;
+use sqlx::{Sqlite, sqlite::SqlitePoolOptions};
+use sqlx::Pool;
 // use sqlx::FromRow;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -28,9 +29,11 @@ struct Room {
     name: Option<String>,
 }
 
-struct TheWebSocket;
+struct WebSockActor {
+    db_pool: Pool<Sqlite>,
+};
 
-impl Actor for TheWebSocket {
+impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -51,7 +54,7 @@ fn text_handler(text: &String) -> &str {
     }
 }
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for TheWebSocket {
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
@@ -62,34 +65,23 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for TheWebSocket {
     }
 }
 
-/**
-async fn index(pool: web::Data<SqlitePool>, req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    let resp = ws::start(TheWebSocket { pool: pool.clone() }, &req, stream); // Clone the pool into the actor
-    println!("{:?}", resp);
-    resp
-}
-*/
-
-/**
-If you just start the ws actor and send some messages once that's one time.
-let (addr, res) = ws::start_with_addr();
-let json = db.query().await;
-addr.send(Msg(json)).await;
-res
-This is what you want to do with onetime db query and send message to client
-*/
-
-/**
-impl StreamHandler<Msg> for Act {
-    fn handle(&mut self, msg: Msg, ctx: &mut Self::Context) {
-        self.db.query().into_actor(self).spawn(ctx);
-    }
-}
-If you does something like this. It's always preferred to let your actor hold a db object
-*/
-
 async fn index(req: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
-    let resp = ws::start(TheWebSocket {}, &req, stream);
+    let db_pool = SqlitePoolOptions::new()
+        .max_connections(5)
+        .connect("sqlite://./chat.db")
+        .await
+        .expect("pool FAILURE");
+
+    let all_messages: Vec<Message> = sqlx::query_as!(Message, "SELECT * from message")
+        .fetch_all(&db_pool)
+        .await
+        .expect("all messages failure");
+
+    let all_messages_json = json!(&all_messages);
+
+    println!("all_messages: {:?}", all_messages_json);
+
+    let resp = ws::start(WebSockActor {db_pool: db_pool.clone()}, &req, stream);
     println!("{:?}", resp);
     resp
 }
@@ -103,22 +95,8 @@ LOGICAL PROCESS
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // set env variables for sqlx
     dotenv().ok();
-
-    let pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect("sqlite://./chat.db")
-        .await
-        .expect("pool FAILURE");
-
-    let all_messages: Vec<Message> = sqlx::query_as!(Message, "SELECT * from message")
-        .fetch_all(&pool)
-        .await
-        .expect("all messages failure");
-
-    let all_messages_json = json!(&all_messages);
-
-    println!("all_messages: {:?}", all_messages_json);
 
     HttpServer::new(|| App::new().route("/ws/", web::get().to(index)))
         .bind("127.0.0.1:8081")?
