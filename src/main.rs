@@ -2,6 +2,7 @@ use actix::{Actor, Running, StreamHandler};
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use chrono;
+use chrono::prelude::*;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -17,11 +18,16 @@ struct User {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Message {
-    id: Option<i64>,
+    id: i64,
     user_id: i64,
     room_id: i64,
     message: String,
-    time: chrono::NaiveDateTime,
+    #[serde(default = "default_time")]
+    time: NaiveDateTime,
+}
+
+fn default_time() -> NaiveDateTime {
+    Utc::now().naive_utc()
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct Room {
@@ -54,9 +60,9 @@ save message in database
 */
 
 fn message_handler(json_message: &String) -> &str {
-    println!("{:?}", json_message);
-    let mes: Value = serde_json::from_str(&json_message).expect("parsing json msg");
-    println!("{:?}", mes);
+    println!("JSON VALUE {:?}", json_message);
+    let mes: Message = serde_json::from_str(&json_message).expect("parsing json msg");
+    println!("JSON TO RS VAL {:?}", mes);
 
     r#"[{"message": 43}]"#
 }
@@ -80,10 +86,11 @@ async fn index(
     req: HttpRequest,
     stream: web::Payload,
 ) -> Result<HttpResponse, Error> {
-    let all_messages: Vec<Message> = sqlx::query_as!(Message, "SELECT * from message")
-        .fetch_all(db_pool.get_ref())
-        .await
-        .expect("all messages failure");
+    let all_messages: Vec<Message> =
+        sqlx::query_as!(Message, "SELECT * FROM message ORDER BY time")
+            .fetch_all(db_pool.get_ref())
+            .await
+            .expect("all messages failure");
 
     let all_messages_json = json!(&all_messages);
 
