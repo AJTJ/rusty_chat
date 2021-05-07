@@ -1,4 +1,4 @@
-use actix::{Actor, Running, StreamHandler};
+use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use chrono;
@@ -12,13 +12,22 @@ use sqlx::{Pool, SqlitePool};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct User {
-    id: Option<i64>,
-    name: Option<String>,
+    id: i64,
+    name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Message {
+struct DatabaseMessage {
     id: i64,
+    user_id: i64,
+    room_id: i64,
+    message: String,
+    #[serde(default = "default_time")]
+    time: NaiveDateTime,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ClientMessage {
     user_id: i64,
     room_id: i64,
     message: String,
@@ -31,12 +40,13 @@ fn default_time() -> NaiveDateTime {
 }
 #[derive(Serialize, Deserialize, Debug)]
 struct Room {
-    id: Option<i64>,
-    name: Option<String>,
+    id: i64,
+    name: String,
 }
 
 struct WebSockActor {
     all_messages: serde_json::Value,
+    db_pool: web::Data<SqlitePool>,
 }
 
 impl Actor for WebSockActor {
@@ -55,28 +65,59 @@ impl Actor for WebSockActor {
 
 /**
 TODO HERE
-add current time object to received message
-save message in database
+upon receival of message
+program should not fail if message is not correct format
+if message has all correct data, then save the message in database
+Currently the front end sets the user_id, room_id and message
 */
 
-fn message_handler(json_message: &String) -> &str {
-    println!("JSON VALUE {:?}", json_message);
-    let mes: Message = serde_json::from_str(&json_message).expect("parsing json msg");
-    println!("JSON TO RS VAL {:?}", mes);
+async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
+    println!("JSON VALUE {:?}", client_message);
+    let mes: ClientMessage = serde_json::from_str(&client_message).expect("parsing json msg");
 
-    r#"[{"message": 43}]"#
+    sqlx::query!(
+        r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+        mes.user_id,
+        mes.room_id,
+        mes.message,
+        mes.time
+    )
+    .execute(db_pool.get_ref())
+    .await
+    .expect("query insert message error");
+
+    let all_messages = get_all_messages(db_pool.clone()).await;
+
+    let all_messages_json = json!(&all_messages);
+
+    all_messages_json.to_string()
 }
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Text(json_message)) => ctx.text(message_handler(&json_message)),
+            Ok(ws::Message::Text(json_message)) => {
+                message_handler(json_message, self.db_pool.clone())
+                    .into_actor(self)
+                    .map(|text, _, ctx| ctx.text(text))
+                    .wait(ctx)
+            }
             Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
             _ => (),
         }
     }
 }
+
+async fn get_all_messages(db_pool: web::Data<SqlitePool>) -> Vec<DatabaseMessage> {
+    let all_messages: Vec<DatabaseMessage> =
+        sqlx::query_as!(DatabaseMessage, "SELECT * FROM message ORDER BY time")
+            .fetch_all(db_pool.get_ref())
+            .await
+            .expect("all messages failure");
+    all_messages
+}
+
 /**
 TODO HERE
 Perform left outer join to get user name from user table
@@ -86,11 +127,7 @@ async fn index(
     req: HttpRequest,
     stream: web::Payload,
 ) -> Result<HttpResponse, Error> {
-    let all_messages: Vec<Message> =
-        sqlx::query_as!(Message, "SELECT * FROM message ORDER BY time")
-            .fetch_all(db_pool.get_ref())
-            .await
-            .expect("all messages failure");
+    let all_messages = get_all_messages(db_pool.clone()).await;
 
     let all_messages_json = json!(&all_messages);
 
@@ -99,6 +136,7 @@ async fn index(
     let resp = ws::start(
         WebSockActor {
             all_messages: all_messages_json,
+            db_pool,
         },
         &req,
         stream,
