@@ -66,9 +66,7 @@ impl Actor for WebSockActor {
 /**
 TODO HERE
 upon receival of message
-program should not fail if message is not correct format
-if message has all correct data, then save the message in database
-Currently the front end sets the user_id, room_id and message
+check message format and do not perform action if message format is not correct
 */
 
 async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
