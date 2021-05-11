@@ -1,4 +1,5 @@
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
+use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
 use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use chrono;
@@ -6,9 +7,10 @@ use chrono::prelude::*;
 use dotenv::dotenv;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::{sqlite::SqlitePoolOptions, Sqlite};
-use sqlx::{Pool, SqlitePool};
+use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 // use sqlx::FromRow;
+
+// DATA STRUCTS
 
 #[derive(Serialize, Deserialize, Debug)]
 struct User {
@@ -38,6 +40,14 @@ struct ClientMessage {
 fn default_time() -> NaiveDateTime {
     Utc::now().naive_utc()
 }
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ResponseToClient {
+    all_messages: String,
+    signed_in: bool,
+    id: String,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Room {
     id: i64,
@@ -47,49 +57,26 @@ struct Room {
 struct WebSockActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
+    id: Identity,
 }
+
+// ACTOR INSTATIATION
 
 impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("STARTING HERE");
-        ctx.text(self.all_messages.to_string());
+        println!("WebSocket Actor Started");
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
-        println!("STOPPING HERE");
+        println!("WebSocket Actor Closed");
+        self.id.forget();
         Running::Stop
     }
 }
 
-/**
-TODO HERE
-upon receival of message
-check message format and do not perform action if message format is not correct
-*/
-
-async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
-    println!("JSON VALUE {:?}", client_message);
-    let mes: ClientMessage = serde_json::from_str(&client_message).expect("parsing json msg");
-
-    sqlx::query!(
-        r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-        mes.user_id,
-        mes.room_id,
-        mes.message,
-        mes.time
-    )
-    .execute(db_pool.get_ref())
-    .await
-    .expect("query insert message error");
-
-    let all_messages = get_all_messages(db_pool.clone()).await;
-
-    let all_messages_json = json!(&all_messages);
-
-    all_messages_json.to_string()
-}
+// STREAM HANDLER
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
@@ -105,17 +92,71 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
             _ => (),
         }
     }
+
+    fn started(&mut self, ctx: &mut Self::Context) {
+        println!("StreamHandler started");
+        let response = ResponseToClient {
+            all_messages: self.all_messages.to_string(),
+            id,
+        };
+        ctx.text(json!(response).to_string());
+    }
+
+    fn finished(&mut self, _: &mut Self::Context) {
+        println!("StreamHandler finished")
+    }
 }
 
-async fn get_all_messages(db_pool: web::Data<SqlitePool>) -> Vec<DatabaseMessage> {
+/**
+TODO HERE
+upon receival of message
+check message format and do not perform action if message format is not correct
+*/
+
+// MESSAGE HANDLING
+
+async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
+    println!("client message {:?}", client_message);
+    let client_object: ClientMessage =
+        serde_json::from_str(&client_message).expect("parsing json msg");
+
+    // println!("client object: {:?}", client_object);
+
+    // sqlx::query!(
+    //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+    //     client_object.user_id,
+    //     client_object.room_id,
+    //     client_object.message,
+    //     client_object.time
+    // )
+    // .execute(db_pool.get_ref())
+    // .await
+    // .expect("query insert message error");
+
+    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    let response = ResponseToClient {
+        all_messages: all_messages_json.to_string(),
+        signed_in: false,
+        user_name: "Henry".to_string(),
+    };
+
+    json!(response).to_string()
+}
+
+// HELPER FUNCTIONS
+
+async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
         sqlx::query_as!(DatabaseMessage, "SELECT * FROM message ORDER BY time")
             .fetch_all(db_pool.get_ref())
             .await
             .expect("all messages failure");
-    all_messages
+    let all_messages_json = json!(&all_messages);
+    all_messages_json
 }
 
+// INDEX HANDLING
 /**
 TODO HERE
 Perform left outer join to get user name from user table
@@ -124,24 +165,33 @@ async fn index(
     db_pool: web::Data<SqlitePool>,
     req: HttpRequest,
     stream: web::Payload,
+    id: Identity,
 ) -> Result<HttpResponse, Error> {
-    let all_messages = get_all_messages(db_pool.clone()).await;
-
-    let all_messages_json = json!(&all_messages);
-
-    println!("all_messages: {:?}", all_messages_json);
-
     let resp = ws::start(
         WebSockActor {
-            all_messages: all_messages_json,
+            all_messages: get_all_messages_json(db_pool.clone()).await,
             db_pool,
+            id,
         },
         &req,
         stream,
     );
-    println!("{:?}", resp);
+    // println!("{:?}", resp);
     resp
 }
+
+// POTENTIAL LOGIN HANDLING
+
+// async fn login(id: Identity) -> HttpResponse {
+//     id.remember("User1".to_owned()); // <- remember identity
+//     HttpResponse::Ok().finish()
+// }
+
+// async fn logout(id: Identity) -> HttpResponse {
+//     id.forget(); // <- remove identity
+//     HttpResponse::Ok().finish()
+// }
+
 /**
 LOGICAL PROCESS
 1. serve all messages to all actors
@@ -149,6 +199,8 @@ LOGICAL PROCESS
 3. update db with new message
 4. update all connections with updated message list
 */
+
+// MAIN AND DB INSTANTIATION
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -166,8 +218,19 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(
+                // create identity middleware
+                IdentityService::new(
+                    // create cookie identity policy
+                    CookieIdentityPolicy::new(&[0; 32])
+                        .name("auth-cookie")
+                        .secure(false),
+                ),
+            )
             // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
+            // .service(web::resource("/index.html").to(index))
+            // .service(web::resource("/login.html").to(login))
             .route("/ws/", web::get().to(index))
     })
     .bind("127.0.0.1:8081")?
