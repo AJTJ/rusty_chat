@@ -29,6 +29,14 @@ struct DatabaseMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
+struct ClientResponse {
+    message: ClientMessage,
+    is_sign_in: bool,
+    user_name: String,
+    password: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
 struct ClientMessage {
     user_id: i64,
     room_id: i64,
@@ -45,7 +53,12 @@ fn default_time() -> NaiveDateTime {
 struct ResponseToClient {
     all_messages: String,
     signed_in: bool,
+    #[serde(default = "default_id")]
     id: String,
+}
+
+fn default_id() -> String {
+    "Anonymous".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -65,13 +78,12 @@ struct WebSockActor {
 impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
 
-    fn started(&mut self, ctx: &mut Self::Context) {
+    fn started(&mut self, _: &mut Self::Context) {
         println!("WebSocket Actor Started");
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
         println!("WebSocket Actor Closed");
-        self.id.forget();
         Running::Stop
     }
 }
@@ -97,12 +109,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
         println!("StreamHandler started");
         let response = ResponseToClient {
             all_messages: self.all_messages.to_string(),
-            id,
+            signed_in: false,
+            id: "Henry".to_string(),
         };
         ctx.text(json!(response).to_string());
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
+        self.id.forget();
         println!("StreamHandler finished")
     }
 }
@@ -117,7 +131,7 @@ check message format and do not perform action if message format is not correct
 
 async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
     println!("client message {:?}", client_message);
-    let client_object: ClientMessage =
+    let client_object: ClientResponse =
         serde_json::from_str(&client_message).expect("parsing json msg");
 
     // println!("client object: {:?}", client_object);
@@ -138,7 +152,7 @@ async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>)
     let response = ResponseToClient {
         all_messages: all_messages_json.to_string(),
         signed_in: false,
-        user_name: "Henry".to_string(),
+        id: "Henry".to_string(),
     };
 
     json!(response).to_string()
