@@ -1,13 +1,18 @@
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
+use actix_cors::Cors;
 use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
-use actix_web::{web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::{
+    http::header, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
+};
 use actix_web_actors::ws;
 use chrono;
 use chrono::prelude::*;
 use dotenv::dotenv;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+// use actix_web::{http::header, middleware::Logger, App, HttpServer};
 // use sqlx::FromRow;
 
 // DATA STRUCTS
@@ -30,8 +35,9 @@ struct DatabaseMessage {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ClientResponse {
-    message: ClientMessage,
+    message: String,
     is_sign_in: bool,
+    is_sign_up: bool,
     user_name: String,
     password: String,
 }
@@ -55,6 +61,8 @@ struct ResponseToClient {
     signed_in: bool,
     #[serde(default = "default_id")]
     id: String,
+    // Currently making it a string that says "None" so that the front-end doesn't display it.
+    message_to_client: String,
 }
 
 fn default_id() -> String {
@@ -111,6 +119,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
             all_messages: self.all_messages.to_string(),
             signed_in: false,
             id: "Henry".to_string(),
+            message_to_client: "None".to_string(),
         };
         ctx.text(json!(response).to_string());
     }
@@ -129,12 +138,50 @@ check message format and do not perform action if message format is not correct
 
 // MESSAGE HANDLING
 
-async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>) -> String {
-    println!("client message {:?}", client_message);
-    let client_object: ClientResponse =
-        serde_json::from_str(&client_message).expect("parsing json msg");
+async fn message_handler(
+    received_client_message: String,
+    db_pool: web::Data<SqlitePool>,
+) -> String {
+    println!("client message {:?}", received_client_message);
 
-    // println!("client object: {:?}", client_object);
+    let client_object: ClientResponse = serde_json::from_str(&received_client_message)
+        .expect("parsing received_client_message msg");
+
+    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    println!("client object: {:?}", client_object);
+
+    let response;
+
+    if client_object.is_sign_up == true {
+        println!("Is sign up");
+
+        response = ResponseToClient {
+            all_messages: all_messages_json.to_string(),
+            signed_in: false,
+            id: "Henry".to_string(),
+            message_to_client: "Performing sign up".to_string(),
+        };
+        return json!(response).to_string();
+    } else if client_object.is_sign_in == true {
+        println!("Is sign in");
+
+        response = ResponseToClient {
+            all_messages: all_messages_json.to_string(),
+            signed_in: false,
+            id: "Henry".to_string(),
+            message_to_client: "Performing sign in".to_string(),
+        };
+        return json!(response).to_string();
+    } else {
+        // check if signed in
+        println!("Is neither sign up nor sign in");
+    }
+
+    let client_message: ClientMessage =
+        serde_json::from_str(&client_object.message).expect("parsing client_object msg");
+
+    println!("client message: {:?}", client_message);
 
     // sqlx::query!(
     //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
@@ -147,12 +194,11 @@ async fn message_handler(client_message: String, db_pool: web::Data<SqlitePool>)
     // .await
     // .expect("query insert message error");
 
-    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
-
-    let response = ResponseToClient {
+    response = ResponseToClient {
         all_messages: all_messages_json.to_string(),
         signed_in: false,
         id: "Henry".to_string(),
+        message_to_client: "None".to_string(),
     };
 
     json!(response).to_string()
@@ -196,23 +242,22 @@ async fn index(
 
 // POTENTIAL LOGIN HANDLING
 
-// async fn login(id: Identity) -> HttpResponse {
-//     id.remember("User1".to_owned()); // <- remember identity
-//     HttpResponse::Ok().finish()
-// }
+async fn signup(req_body: String) -> HttpResponse {
+    // id.remember("User1".to_owned()); // <- remember identity
+    println!("Signup request body: {:?}", req_body);
+    HttpResponse::Ok().finish()
+}
 
-// async fn logout(id: Identity) -> HttpResponse {
-//     id.forget(); // <- remove identity
-//     HttpResponse::Ok().finish()
-// }
+async fn login(_: Identity, req_body: String) -> HttpResponse {
+    // id.remember("User1".to_owned()); // <- remember identity
+    println!("login request body: {:?}", req_body);
+    HttpResponse::Ok().finish()
+}
 
-/**
-LOGICAL PROCESS
-1. serve all messages to all actors
-2. await receipt of new message
-3. update db with new message
-4. update all connections with updated message list
-*/
+async fn logout(id: Identity) -> HttpResponse {
+    id.forget(); // <- remove identity
+    HttpResponse::Ok().finish()
+}
 
 // MAIN AND DB INSTANTIATION
 
@@ -230,21 +275,37 @@ async fn main() -> std::io::Result<()> {
 
     let shared_db_pool = web::Data::new(db_pool);
 
+    // Generate a random 32 byte key. Note that it is important to use a unique
+    // private key for every project. Anyone with access to the key can generate
+    // authentication cookies for any user!
+    let private_key = rand::thread_rng().gen::<[u8; 32]>();
     HttpServer::new(move || {
         App::new()
             .wrap(
                 // create identity middleware
                 IdentityService::new(
                     // create cookie identity policy
-                    CookieIdentityPolicy::new(&[0; 32])
+                    CookieIdentityPolicy::new(&private_key)
                         .name("auth-cookie")
                         .secure(false),
                 ),
             )
+            .wrap(
+                Cors::default()
+                    .allowed_origin("http://localhost:3000")
+                    .allowed_methods(vec!["GET", "POST"])
+                    .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
+                    .allowed_header(header::CONTENT_TYPE)
+                    .supports_credentials()
+                    .max_age(3600),
+            )
+            .wrap(Logger::default())
             // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
             // .service(web::resource("/index.html").to(index))
-            // .service(web::resource("/login.html").to(login))
+            .route("/signup/", web::post().to(signup))
+            .route("/login/", web::post().to(login))
+            .route("/logout/", web::get().to(logout))
             .route("/ws/", web::get().to(index))
     })
     .bind("127.0.0.1:8081")?
