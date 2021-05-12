@@ -5,6 +5,7 @@ use actix_web::{
     http::header, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
 };
 use actix_web_actors::ws;
+use argon2::{self, Config};
 use chrono;
 use chrono::prelude::*;
 use dotenv::dotenv;
@@ -14,6 +15,8 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 // use actix_web::{http::header, middleware::Logger, App, HttpServer};
 // use sqlx::FromRow;
+
+const SALT: &[u8] = b"randomsaltyness";
 
 // DATA STRUCTS
 
@@ -81,7 +84,7 @@ struct WebSockActor {
     id: Identity,
 }
 
-// ACTOR INSTATIATION
+// ACTOR INSTANTIATION
 
 impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
@@ -240,16 +243,42 @@ async fn index(
     resp
 }
 
-// POTENTIAL LOGIN HANDLING
+// AUTH HANDLING
 
-async fn signup(req_body: String) -> HttpResponse {
-    // id.remember("User1".to_owned()); // <- remember identity
-    println!("Signup request body: {:?}", req_body);
-    HttpResponse::Ok().finish()
+#[derive(Serialize, Deserialize, Debug)]
+struct SignInSignUp {
+    user_name: String,
+    password: String,
 }
 
-async fn login(_: Identity, req_body: String) -> HttpResponse {
+/**
+    Check database if user_name exists or user is already logged in
+        if exists/logged in -> send response to client
+    else
+        -> save user_name + password in db
+        -> sign-in the user
+*/
+async fn signup(id: Identity, req_body: String) -> HttpResponse {
+    println!("Signup request body: {:?}", req_body);
+    // TODO: CHECK IF USER ALREADY EXISTS
+    let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
+    let config = Config::default();
+    let hash = argon2::hash_encoded(body_json.password.as_bytes(), SALT, &config).unwrap();
+    // save the user for this session
+    id.remember(body_json.user_name.to_owned());
+    HttpResponse::Ok().finish()
+}
+/**
+    Check database for user_name and password combo
+        if exists -> sign in that user
+    else
+        -> send failed attempt message
+*/
+async fn login(id: Identity, req_body: String) -> HttpResponse {
     // id.remember("User1".to_owned()); // <- remember identity
+    let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
+    // TODO: CHECK THE DATABASE FOR THE USERNAME/PASSWORD COMBO
+    id.remember(body_json.user_name.to_owned());
     println!("login request body: {:?}", req_body);
     HttpResponse::Ok().finish()
 }
@@ -263,6 +292,13 @@ async fn logout(id: Identity) -> HttpResponse {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    let password = b"password";
+
+    let config = Config::default();
+    let hash = argon2::hash_encoded(password, SALT, &config).unwrap();
+    let matches = argon2::verify_encoded(&hash, password).unwrap();
+    assert!(matches);
+
     // set env variables for sqlx
     dotenv().ok();
 

@@ -13,6 +13,7 @@ actix-web-actors = "3.0.0"
 actix-identity = "0.3.1"
 actix-cors = "0.5.4"
 serde_json = "1.0"
+rust-argon2 = "0.8"
 serde = { version = "1.0", features = ["derive"] }
 sqlx = { version = "0.4.2", features = [ "runtime-actix-rustls", "sqlite", "chrono" ] }
 dotenv = "0.15.0"
