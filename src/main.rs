@@ -84,7 +84,7 @@ struct WebSockActor {
     id: Identity,
 }
 
-// ACTOR INSTANTIATION
+// WS ACTOR INSTANTIATION
 
 impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
@@ -99,7 +99,7 @@ impl Actor for WebSockActor {
     }
 }
 
-// STREAM HANDLER
+// WS STREAM HANDLER
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
