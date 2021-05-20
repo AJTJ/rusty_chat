@@ -24,6 +24,7 @@ const SALT: &[u8] = b"randomsaltyness";
 struct User {
     id: i64,
     name: String,
+    password: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -251,37 +252,102 @@ struct SignInSignUp {
     password: String,
 }
 
+// sqlx::query!(
+//     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+//     client_object.user_id,
+//     client_object.room_id,
+//     client_object.message,
+//     client_object.time
+// )
+// .execute(db_pool.get_ref())
+// .await
+// .expect("query insert message error");
+
 /**
-    Check database if user_name exists or user is already logged in
+    SIGN UP
+    Graceful error if receiving wrong data from frontend.
+    Check database if name exists or user is already logged in
         if exists/logged in -> send response to client
     else
         -> save user_name + password in db
         -> sign-in the user
 */
-async fn signup(id: Identity, req_body: String) -> HttpResponse {
+async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
     println!("Signup request body: {:?}", req_body);
-    // TODO: CHECK IF USER ALREADY EXISTS
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
-    let config = Config::default();
-    let hash = argon2::hash_encoded(body_json.password.as_bytes(), SALT, &config).unwrap();
-    // save the user for this session
-    id.remember(body_json.user_name.to_owned());
-    HttpResponse::Ok().finish()
+    // TODO: CHECK IF USER ALREADY EXISTS
+    let user_name = &body_json.user_name;
+
+    let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
+        .fetch_one(db_pool.get_ref())
+        .await;
+
+    match user {
+        // If user exists, exit the process
+        Ok(user) => {
+            println!("user ALREADY exists, {:?}", user);
+            HttpResponse::Ok().finish()
+        }
+        // if user does NOT exist, then sign them up
+        Err(user) => {
+            println!("user does not exist, thus we are saving them, {:?}", user);
+            let config = Config::default();
+            let password_hash =
+                argon2::hash_encoded(body_json.password.as_bytes(), SALT, &config).unwrap();
+
+            // SAVE THE USER
+            sqlx::query!(
+                r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
+                user_name,
+                password_hash
+            )
+            .execute(db_pool.get_ref())
+            .await
+            .expect("Saving new user did NOT work");
+
+            // save the user for this session
+            id.remember(body_json.user_name.to_owned());
+            HttpResponse::Ok().finish()
+        }
+    }
 }
 /**
+    LOGIN
+    Graceful error if receiving wrong data from frontend.
     Check database for user_name and password combo
         if exists -> sign in that user
     else
         -> send failed attempt message
 */
-async fn login(id: Identity, req_body: String) -> HttpResponse {
+async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
     // id.remember("User1".to_owned()); // <- remember identity
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
+    let user_name = &body_json.user_name;
+    let password = &body_json.password;
+
     // TODO: CHECK THE DATABASE FOR THE USERNAME/PASSWORD COMBO
-    id.remember(body_json.user_name.to_owned());
-    println!("login request body: {:?}", req_body);
-    HttpResponse::Ok().finish()
+    match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
+        .fetch_one(db_pool.get_ref())
+        .await
+    {
+        Ok(user_record) => {
+            println!("user exists, {:?}", user_record);
+            // NEED TO CHECK IF THE PASSWORDS MATCH
+            // HOW DO I GET user_record.password?
+            let pw = user_record.password;
+            // let matches = argon2::verify_encoded(&hash, password).unwrap();
+            id.remember(body_json.user_name.to_owned());
+            HttpResponse::Ok().finish()
+        }
+        Err(user) => {
+            println!("user does not exist, thus no login, {:?}", user);
+            HttpResponse::Ok().finish()
+        }
+    }
 }
+// id.remember(body_json.user_name.to_owned());
+// println!("login request body: {:?}", req_body);
+// HttpResponse::Ok().finish()
 
 async fn logout(id: Identity) -> HttpResponse {
     id.forget(); // <- remove identity
