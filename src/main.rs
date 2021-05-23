@@ -275,15 +275,16 @@ struct SignInSignUp {
 async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
     println!("Signup request body: {:?}", req_body);
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
-    // TODO: CHECK IF USER ALREADY EXISTS
     let user_name = &body_json.user_name;
+    let password = body_json.password;
 
+    // check if user name exists
     let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
         .fetch_one(db_pool.get_ref())
         .await;
 
     match user {
-        // If user exists, exit the process
+        // If user name exists, exit the process
         Ok(user) => {
             println!("user ALREADY exists, {:?}", user);
             HttpResponse::Ok().finish()
@@ -292,8 +293,7 @@ async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) 
         Err(user) => {
             println!("user does not exist, thus we are saving them, {:?}", user);
             let config = Config::default();
-            let password_hash =
-                argon2::hash_encoded(body_json.password.as_bytes(), SALT, &config).unwrap();
+            let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
 
             // SAVE THE USER
             sqlx::query!(
@@ -325,18 +325,26 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
     let user_name = &body_json.user_name;
     let password = &body_json.password;
 
-    // TODO: CHECK THE DATABASE FOR THE USERNAME/PASSWORD COMBO
+    // Check for user name
     match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
         .fetch_one(db_pool.get_ref())
         .await
     {
         Ok(user_record) => {
             println!("user exists, {:?}", user_record);
-            // NEED TO CHECK IF THE PASSWORDS MATCH
-            // HOW DO I GET user_record.password?
-            let pw = user_record.password;
-            // let matches = argon2::verify_encoded(&hash, password).unwrap();
-            id.remember(body_json.user_name.to_owned());
+            let pw_hash = user_record.password;
+            let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes());
+            println!("{:?}, {:?}", password, pw_hash);
+            //check if password matches
+            match password_match {
+                Ok(_) => {
+                    // sign in user
+                    println!("password matches");
+                    id.remember(user_name.to_owned());
+                }
+                // don't sign in if not matching
+                Err(e) => println!("password not match, {:?}", e),
+            };
             HttpResponse::Ok().finish()
         }
         Err(user) => {
@@ -345,9 +353,6 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
         }
     }
 }
-// id.remember(body_json.user_name.to_owned());
-// println!("login request body: {:?}", req_body);
-// HttpResponse::Ok().finish()
 
 async fn logout(id: Identity) -> HttpResponse {
     id.forget(); // <- remove identity
