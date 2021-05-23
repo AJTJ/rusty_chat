@@ -38,17 +38,15 @@ struct DatabaseMessage {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ClientResponse {
+struct FromClient {
     message: String,
-    is_sign_in: bool,
-    is_sign_up: bool,
     user_name: String,
     password: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ClientMessage {
-    user_id: i64,
+struct SentToClient {
+    user_name: String,
     room_id: i64,
     message: String,
     #[serde(default = "default_time")]
@@ -104,10 +102,15 @@ impl Actor for WebSockActor {
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        if let Some(id) = self.id.identity() {
+            println!("Welcome! {}", id)
+        } else {
+            println!("Welcome Anonymous!")
+        }
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(json_message)) => {
-                message_handler(json_message, self.db_pool.clone())
+                message_handler(json_message, self.db_pool.clone(), self.id.clone())
                     .into_actor(self)
                     .map(|text, _, ctx| ctx.text(text))
                     .wait(ctx)
@@ -145,54 +148,36 @@ check message format and do not perform action if message format is not correct
 async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
+    id: Identity,
 ) -> String {
     println!("client message {:?}", received_client_message);
 
-    let client_object: ClientResponse = serde_json::from_str(&received_client_message)
+    let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
 
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
-    println!("client object: {:?}", client_object);
+    if let Some(id) = id.identity() {
+        println!("Welcome! {}", id)
+    } else {
+        println!("Welcome Anonymous!")
+    }
+
+    println!("client object: {:?}", from_client);
 
     let response;
 
-    if client_object.is_sign_up == true {
-        println!("Is sign up");
+    // check if signed in
 
-        response = ResponseToClient {
-            all_messages: all_messages_json.to_string(),
-            signed_in: false,
-            id: "Henry".to_string(),
-            message_to_client: "Performing sign up".to_string(),
-        };
-        return json!(response).to_string();
-    } else if client_object.is_sign_in == true {
-        println!("Is sign in");
-
-        response = ResponseToClient {
-            all_messages: all_messages_json.to_string(),
-            signed_in: false,
-            id: "Henry".to_string(),
-            message_to_client: "Performing sign in".to_string(),
-        };
-        return json!(response).to_string();
-    } else {
-        // check if signed in
-        println!("Is neither sign up nor sign in");
-    }
-
-    let client_message: ClientMessage =
-        serde_json::from_str(&client_object.message).expect("parsing client_object msg");
-
-    println!("client message: {:?}", client_message);
+    let sent_to_client: SentToClient =
+        serde_json::from_str(&from_client.message).expect("parsing from_client msg");
 
     // sqlx::query!(
     //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-    //     client_object.user_id,
-    //     client_object.room_id,
-    //     client_object.message,
-    //     client_object.time
+    //     from_client.user_id,
+    //     from_client.room_id,
+    //     from_client.message,
+    //     from_client.time
     // )
     // .execute(db_pool.get_ref())
     // .await
@@ -254,10 +239,10 @@ struct SignInSignUp {
 
 // sqlx::query!(
 //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-//     client_object.user_id,
-//     client_object.room_id,
-//     client_object.message,
-//     client_object.time
+//     from_client.user_id,
+//     from_client.room_id,
+//     from_client.message,
+//     from_client.time
 // )
 // .execute(db_pool.get_ref())
 // .await
@@ -273,43 +258,50 @@ struct SignInSignUp {
         -> sign-in the user
 */
 async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
-    println!("Signup request body: {:?}", req_body);
-    let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
-    let user_name = &body_json.user_name;
-    let password = body_json.password;
+    // println!("Signup request body: {:?}", req_body);
+    // let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
+    // let user_name = &body_json.user_name;
+    // let password = body_json.password;
 
-    // check if user name exists
-    let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
-        .fetch_one(db_pool.get_ref())
-        .await;
+    // // check if user name exists
+    // let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
+    //     .fetch_one(db_pool.get_ref())
+    //     .await;
 
-    match user {
-        // If user name exists, exit the process
-        Ok(user) => {
-            println!("user ALREADY exists, {:?}", user);
-            HttpResponse::Ok().finish()
-        }
-        // if user does NOT exist, then sign them up
-        Err(user) => {
-            println!("user does not exist, thus we are saving them, {:?}", user);
-            let config = Config::default();
-            let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
+    // match user {
+    //     // If user name exists, exit the process
+    //     Ok(user) => {
+    //         println!("user ALREADY exists, {:?}", user);
+    //         HttpResponse::Ok().finish()
+    //     }
+    //     // if user does NOT exist, then sign them up
+    //     Err(user) => {
+    //         println!("user does not exist, thus we are saving them, {:?}", user);
+    //         let config = Config::default();
+    //         let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
 
-            // SAVE THE USER
-            sqlx::query!(
-                r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
-                user_name,
-                password_hash
-            )
-            .execute(db_pool.get_ref())
-            .await
-            .expect("Saving new user did NOT work");
+    //         // SAVE THE USER
+    //         sqlx::query!(
+    //             r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
+    //             user_name,
+    //             password_hash
+    //         )
+    //         .execute(db_pool.get_ref())
+    //         .await
+    //         .expect("Saving new user did NOT work");
 
-            // save the user for this session
-            id.remember(body_json.user_name.to_owned());
-            HttpResponse::Ok().finish()
-        }
+    //         // save the user for this session
+    //         id.remember(body_json.user_name.to_owned());
+    //         HttpResponse::Ok().finish()
+    //     }
+    // }
+    // FOR TESTING COOKIE STUFF
+    if let Some(id) = id.identity() {
+        println!("Welcome! {}", id)
+    } else {
+        println!("Welcome Anonymous!")
     }
+    HttpResponse::Ok().finish()
 }
 /**
     LOGIN
@@ -333,18 +325,22 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
         Ok(user_record) => {
             println!("user exists, {:?}", user_record);
             let pw_hash = user_record.password;
-            let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes());
+            let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
             println!("{:?}, {:?}", password, pw_hash);
             //check if password matches
             match password_match {
-                Ok(_) => {
-                    // sign in user
-                    println!("password matches");
+                true => {
                     id.remember(user_name.to_owned());
                 }
-                // don't sign in if not matching
-                Err(e) => println!("password not match, {:?}", e),
-            };
+                false => {}
+            }
+
+            if let Some(id) = id.identity() {
+                println!("Welcome! {}", id)
+            } else {
+                println!("Welcome Anonymous!")
+            }
+
             HttpResponse::Ok().finish()
         }
         Err(user) => {
@@ -361,15 +357,15 @@ async fn logout(id: Identity) -> HttpResponse {
 
 // MAIN AND DB INSTANTIATION
 
+// PW DEMO
+// let password = b"password";
+// let config = Config::default();
+// let hash = argon2::hash_encoded(password, SALT, &config).unwrap();
+// let matches = argon2::verify_encoded(&hash, password).unwrap();
+// assert!(matches);
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let password = b"password";
-
-    let config = Config::default();
-    let hash = argon2::hash_encoded(password, SALT, &config).unwrap();
-    let matches = argon2::verify_encoded(&hash, password).unwrap();
-    assert!(matches);
-
     // set env variables for sqlx
     dotenv().ok();
 
@@ -392,6 +388,7 @@ async fn main() -> std::io::Result<()> {
                 // create identity middleware
                 IdentityService::new(
                     // create cookie identity policy
+                    // CookieIdentityPolicy::new(&[0; 32])
                     CookieIdentityPolicy::new(&private_key)
                         .name("auth-cookie")
                         .secure(false),
@@ -409,7 +406,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
-            // .service(web::resource("/index.html").to(index))
+            // the different endpoints
             .route("/signup/", web::post().to(signup))
             .route("/login/", web::post().to(login))
             .route("/logout/", web::get().to(logout))
