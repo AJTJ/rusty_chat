@@ -326,7 +326,7 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
             // println!("user exists, {:?}", user_record);
             let pw_hash = user_record.password;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
-            // println!("{:?}, {:?}", password, pw_hash);
+            println!("{:?}, {:?}", password, pw_hash);
             //check if password matches
             match password_match {
                 true => {
@@ -351,7 +351,15 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
 }
 
 async fn logout(id: Identity) -> HttpResponse {
-    id.forget(); // <- remove identity
+    // id.forget(); // <- remove identity
+    // HttpResponse::Ok().finish()
+
+    // FOR TESTING
+    if let Some(id) = id.identity() {
+        println!("id in login: {:?}", id)
+    } else {
+        println!("No id login")
+    }
     HttpResponse::Ok().finish()
 }
 
