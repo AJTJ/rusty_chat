@@ -103,9 +103,9 @@ impl Actor for WebSockActor {
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         if let Some(id) = self.id.identity() {
-            println!("Welcome! {}", id)
+            println!("id in stream handler {}", id)
         } else {
-            println!("Welcome Anonymous!")
+            println!("No id stream handler!")
         }
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
@@ -150,7 +150,7 @@ async fn message_handler(
     db_pool: web::Data<SqlitePool>,
     id: Identity,
 ) -> String {
-    println!("client message {:?}", received_client_message);
+    // println!("client message {:?}", received_client_message);
 
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
@@ -158,12 +158,12 @@ async fn message_handler(
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
     if let Some(id) = id.identity() {
-        println!("Welcome! {}", id)
+        println!("id message handler: {}", id)
     } else {
-        println!("Welcome Anonymous!")
+        println!("no id message handler!")
     }
 
-    println!("client object: {:?}", from_client);
+    // println!("client object: {:?}", from_client);
 
     let response;
 
@@ -297,9 +297,9 @@ async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) 
     // }
     // FOR TESTING COOKIE STUFF
     if let Some(id) = id.identity() {
-        println!("Welcome! {}", id)
+        println!("id signup {}", id)
     } else {
-        println!("Welcome Anonymous!")
+        println!("no id signup!")
     }
     HttpResponse::Ok().finish()
 }
@@ -323,10 +323,10 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
         .await
     {
         Ok(user_record) => {
-            println!("user exists, {:?}", user_record);
+            // println!("user exists, {:?}", user_record);
             let pw_hash = user_record.password;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
-            println!("{:?}, {:?}", password, pw_hash);
+            // println!("{:?}, {:?}", password, pw_hash);
             //check if password matches
             match password_match {
                 true => {
@@ -336,9 +336,9 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
             }
 
             if let Some(id) = id.identity() {
-                println!("Welcome! {}", id)
+                println!("id in login: {:?}", id)
             } else {
-                println!("Welcome Anonymous!")
+                println!("No id login")
             }
 
             HttpResponse::Ok().finish()
@@ -391,7 +391,9 @@ async fn main() -> std::io::Result<()> {
                     // CookieIdentityPolicy::new(&[0; 32])
                     CookieIdentityPolicy::new(&private_key)
                         .name("auth-cookie")
-                        .secure(false),
+                        .secure(true)
+                        // NOT FOR
+                        .same_site(actix_web::cookie::SameSite::None),
                 ),
             )
             .wrap(
