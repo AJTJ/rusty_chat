@@ -21,10 +21,6 @@ use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::path::PathBuf;
 mod watcher;
 
-// UNUSED IMPORTS
-// use actix_web::{http::header, middleware::Logger, App, HttpServer};
-// use sqlx::FromRow;
-
 const SALT: &[u8] = b"randomsaltyness";
 
 // DATA STRUCTS
@@ -89,7 +85,7 @@ struct Room {
 struct WebSockActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
-    id: Identity,
+    current_id: Option<String>,
 }
 
 // WS ACTOR INSTANTIATION
@@ -115,7 +111,7 @@ impl Actor for WebSockActor {
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        if let Some(id) = self.id.identity() {
+        if let Some(id) = &self.current_id {
             println!("id in stream handler {}", id)
         } else {
             println!("No id stream handler!")
@@ -123,7 +119,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(json_message)) => {
-                message_handler(json_message, self.db_pool.clone(), self.id.clone())
+                message_handler(json_message, self.db_pool.clone(), self.current_id.clone())
                     .into_actor(self)
                     .map(|text, _, ctx| ctx.text(text))
                     .wait(ctx)
@@ -135,7 +131,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("StreamHandler STARTED");
-        if let Some(id) = self.id.identity() {
+        if let Some(id) = &self.current_id {
             println!("id stream handler started: {}", id)
         } else {
             println!("no id stream handler started!")
@@ -150,7 +146,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
-        self.id.forget();
+        // self.id.forget();
         println!("StreamHandler FINISHED")
     }
 }
@@ -166,7 +162,7 @@ check message format and do not perform action if message format is not correct
 async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
-    id: Identity,
+    current_id: Option<String>,
 ) -> String {
     // println!("client message {:?}", received_client_message);
 
@@ -175,7 +171,7 @@ async fn message_handler(
 
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
-    if let Some(id) = id.identity() {
+    if let Some(id) = current_id {
         println!("id message handler: {}", id)
     } else {
         println!("no id message handler!")
@@ -190,6 +186,7 @@ async fn message_handler(
     let sent_to_client: SentToClient =
         serde_json::from_str(&from_client.message).expect("parsing from_client msg");
 
+    // ADD TO MESSAGES
     // sqlx::query!(
     //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
     //     from_client.user_id,
@@ -242,19 +239,18 @@ async fn index(
 
     let all_messages = get_all_messages_json(db_pool.clone()).await;
 
+    let current_id = id.identity();
+
     // For some reason the id isn't being sent/read by the WebSocket
     let response = ws::start(
         WebSockActor {
             all_messages,
             db_pool,
-            id,
+            current_id,
         },
         &req,
         stream,
     );
-
-    // ws::start(watcher::ChangesWs, &req, stream);
-
     response
 }
 
@@ -394,13 +390,6 @@ async fn logout(id: Identity) -> HttpResponse {
 
 // MAIN AND DB INSTANTIATION
 
-// PW DEMO
-// let password = b"password";
-// let config = Config::default();
-// let hash = argon2::hash_encoded(password, SALT, &config).unwrap();
-// let matches = argon2::verify_encoded(&hash, password).unwrap();
-// assert!(matches);
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // set env variables for sqlx
@@ -436,23 +425,12 @@ async fn main() -> std::io::Result<()> {
                 // create identity middleware
                 IdentityService::new(
                     // create cookie identity policy
-                    // CookieIdentityPolicy::new(&[0; 32])
                     CookieIdentityPolicy::new(&private_key)
                         .name("auth-cookie")
                         .secure(true)
                         // NOT FOR
                         .same_site(actix_web::cookie::SameSite::None),
                 ),
-            )
-            .wrap(
-                Cors::default()
-                    // .allowed_origin("http://localhost:3000")
-                    .allowed_origin("http://127.0.0.1:8081/")
-                    .allowed_methods(vec!["GET", "POST"])
-                    .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
-                    .allowed_header(header::CONTENT_TYPE)
-                    .supports_credentials()
-                    .max_age(3600),
             )
             .wrap(Logger::default())
             // pass a clone of the pool to the request
@@ -463,14 +441,38 @@ async fn main() -> std::io::Result<()> {
             .route("/logout/", web::get().to(logout))
             .route("/ws/", web::get().to(index))
             .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
-        // .service(fs::Files::new("/", "./chat_socket/build").show_files_listing())
-        // .route("/", web::get().to(static_files))
     })
     .bind("127.0.0.1:8081")?
     .run()
     .await
 }
 
+// NOTES: about://flags/ samesite flags
+
+// UNUSED IMPORTS
+// use actix_web::{http::header, middleware::Logger, App, HttpServer};
+// use sqlx::FromRow;
+
+// PW DEMO
+// let password = b"password";
+// let config = Config::default();
+// let hash = argon2::hash_encoded(password, SALT, &config).unwrap();
+// let matches = argon2::verify_encoded(&hash, password).unwrap();
+// assert!(matches);
+
+// CORS WRAPPING (NO LONGER NEEDED)
+// .wrap(
+//     Cors::default()
+//         // .allowed_origin("http://localhost:3000")
+//         .allowed_origin("http://127.0.0.1:8081/")
+//         .allowed_methods(vec!["GET", "POST"])
+//         .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
+//         .allowed_header(header::CONTENT_TYPE)
+//         .supports_credentials()
+//         .max_age(3600),
+// )
+
+// A SINGLE STATIC FILE
 // async fn static_files(req: HttpRequest) -> Result<NamedFile> {
 //     println!("the req: {:?}", req);
 //     let path: PathBuf = req
