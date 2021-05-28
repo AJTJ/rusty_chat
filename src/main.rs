@@ -1,18 +1,27 @@
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
 use actix_cors::Cors;
+use actix_files as fs;
 use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
 use actix_web::{
     http::header, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
+    Result,
 };
 use actix_web_actors::ws;
 use argon2::{self, Config};
 use chrono;
 use chrono::prelude::*;
 use dotenv::dotenv;
+use fs::NamedFile;
+use hotwatch::{Event, Hotwatch};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+// use actix_web::{HttpRequest, Result};
+use std::path::PathBuf;
+mod watcher;
+
+// UNUSED IMPORTS
 // use actix_web::{http::header, middleware::Logger, App, HttpServer};
 // use sqlx::FromRow;
 
@@ -89,12 +98,16 @@ impl Actor for WebSockActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, _: &mut Self::Context) {
-        println!("WebSocket Actor Started");
+        println!("WS Actor STARTED");
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
-        println!("WebSocket Actor Closed");
+        println!("WS Actor CLOSING");
         Running::Stop
+    }
+
+    fn stopped(&mut self, _: &mut Self::Context) {
+        println!("WS Actor CLOSED")
     }
 }
 
@@ -121,7 +134,12 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("StreamHandler started");
+        println!("StreamHandler STARTED");
+        if let Some(id) = self.id.identity() {
+            println!("id stream handler started: {}", id)
+        } else {
+            println!("no id stream handler started!")
+        }
         let response = ResponseToClient {
             all_messages: self.all_messages.to_string(),
             signed_in: false,
@@ -133,7 +151,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
 
     fn finished(&mut self, _: &mut Self::Context) {
         self.id.forget();
-        println!("StreamHandler finished")
+        println!("StreamHandler FINISHED")
     }
 }
 
@@ -216,17 +234,28 @@ async fn index(
     stream: web::Payload,
     id: Identity,
 ) -> Result<HttpResponse, Error> {
-    let resp = ws::start(
+    if let Some(id) = id.identity() {
+        println!("id index: {}", id)
+    } else {
+        println!("no id index!")
+    }
+
+    let all_messages = get_all_messages_json(db_pool.clone()).await;
+
+    // For some reason the id isn't being sent/read by the WebSocket
+    let response = ws::start(
         WebSockActor {
-            all_messages: get_all_messages_json(db_pool.clone()).await,
+            all_messages,
             db_pool,
             id,
         },
         &req,
         stream,
     );
-    // println!("{:?}", resp);
-    resp
+
+    // ws::start(watcher::ChangesWs, &req, stream);
+
+    response
 }
 
 // AUTH HANDLING
@@ -377,6 +406,16 @@ async fn main() -> std::io::Result<()> {
     // set env variables for sqlx
     dotenv().ok();
 
+    // WATCH FOR CHANGES
+    let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
+    hotwatch
+        .watch("./chat_socket/build", |event: Event| {
+            if let Event::Write(path) = event {
+                println!("Changes in front-end");
+            }
+        })
+        .expect("failed to watch file!");
+
     // pool constructed here for all actors
     let db_pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -390,6 +429,7 @@ async fn main() -> std::io::Result<()> {
     // private key for every project. Anyone with access to the key can generate
     // authentication cookies for any user!
     let private_key = rand::thread_rng().gen::<[u8; 32]>();
+
     HttpServer::new(move || {
         App::new()
             .wrap(
@@ -406,7 +446,8 @@ async fn main() -> std::io::Result<()> {
             )
             .wrap(
                 Cors::default()
-                    .allowed_origin("http://localhost:3000")
+                    // .allowed_origin("http://localhost:3000")
+                    .allowed_origin("http://127.0.0.1:8081/")
                     .allowed_methods(vec!["GET", "POST"])
                     .allowed_headers(vec![header::AUTHORIZATION, header::ACCEPT])
                     .allowed_header(header::CONTENT_TYPE)
@@ -421,8 +462,22 @@ async fn main() -> std::io::Result<()> {
             .route("/login/", web::post().to(login))
             .route("/logout/", web::get().to(logout))
             .route("/ws/", web::get().to(index))
+            .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
+        // .service(fs::Files::new("/", "./chat_socket/build").show_files_listing())
+        // .route("/", web::get().to(static_files))
     })
     .bind("127.0.0.1:8081")?
     .run()
     .await
 }
+
+// async fn static_files(req: HttpRequest) -> Result<NamedFile> {
+//     println!("the req: {:?}", req);
+//     let path: PathBuf = req
+//         .match_info()
+//         .query("./chat_socket/build")
+//         .parse()
+//         .unwrap();
+//     println!("path: {:?}", path);
+//     Ok(NamedFile::open(path)?)
+// }
