@@ -1,12 +1,13 @@
+use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
 use actix_cors::Cors;
 use actix_files as fs;
 use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
 use actix_web::{
-    http::header, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
-    Result,
+    http::header, middleware::Logger, web, App, Either, Error, HttpRequest, HttpResponse,
+    HttpServer, Result,
 };
-use actix_web_actors::ws;
+use actix_web_actors::ws::{self, WebsocketContext};
 use argon2::{self, Config};
 use chrono;
 use chrono::prelude::*;
@@ -16,10 +17,14 @@ use hotwatch::{Event, Hotwatch};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sqlx::prelude;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
+use std::collections::HashMap;
 // use actix_web::{HttpRequest, Result};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 mod watcher;
+use std::collections::hash_map::RandomState;
 
 const SALT: &[u8] = b"randomsaltyness";
 
@@ -82,15 +87,74 @@ struct Room {
     name: String,
 }
 
-struct WebSockActor {
+// RESET ACTOR INSTANTIATION
+
+/// Define message
+#[derive(Message)]
+#[rtype(result = "Result<bool, std::io::Error>")]
+struct Ping;
+
+// Define ResetActor
+struct ResetActor;
+
+impl Actor for ResetActor {
+    type Context = Context<Self>;
+
+    fn started(&mut self, _: &mut Context<Self>) {
+        println!("ResetActor is alive");
+    }
+
+    fn stopped(&mut self, _: &mut Context<Self>) {
+        println!("ResetActor is stopped");
+    }
+}
+
+/// Define handler for `Ping` message
+impl Handler<Ping> for ResetActor {
+    type Result = Result<bool, std::io::Error>;
+
+    fn handle(&mut self, msg: Ping, ctx: &mut Context<Self>) -> Self::Result {
+        println!("TEST Ping received");
+        Ok(true)
+    }
+}
+
+// TEST WS ACTOR
+
+// Define
+// struct TestWSActor;
+
+// impl Actor for TestWSActor {
+//     type Context = WebsocketContext<Self>;
+//     // type Context = Context<Self>;
+
+//     fn started(&mut self, _: &mut Self::Context) {
+//         println!("TEST WS Actor STARTED");
+//     }
+
+//     fn stopped(&mut self, _: &mut Self::Context) {
+//         println!("TEST WS Actor CLOSED")
+//     }
+// }
+
+// impl Handler<Ping> for TestWSActor {
+//     type Result = Result<bool, std::io::Error>;
+
+//     fn handle(&mut self, msg: Ping, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+//         println!("TEST WS Ping received");
+//         Ok(true)
+//     }
+// }
+
+// WS ACTOR INSTANTIATION
+#[derive(Debug)]
+struct WebSocketActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
     current_id: Option<String>,
 }
 
-// WS ACTOR INSTANTIATION
-
-impl Actor for WebSockActor {
+impl Actor for WebSocketActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, _: &mut Self::Context) {
@@ -107,10 +171,21 @@ impl Actor for WebSockActor {
     }
 }
 
-// WS STREAM HANDLER
+// Handler for Ping Message
+impl Handler<Ping> for WebSocketActor {
+    type Result = Result<bool, std::io::Error>;
 
-impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
+    fn handle(&mut self, msg: Ping, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+        println!("WS Ping received");
+        Ok(true)
+    }
+}
+
+// WS STREAM HANDLER
+impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        // let ws_addr = ctx.address();
+
         if let Some(id) = &self.current_id {
             println!("id in stream handler {}", id)
         } else {
@@ -146,7 +221,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSockActor {
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
-        // self.id.forget();
         println!("StreamHandler FINISHED")
     }
 }
@@ -157,7 +231,7 @@ upon receival of message
 check message format and do not perform action if message format is not correct
 */
 
-// MESSAGE HANDLING
+// WEBSOCKET MESSAGE HANDLING
 
 async fn message_handler(
     received_client_message: String,
@@ -208,7 +282,7 @@ async fn message_handler(
     json!(response).to_string()
 }
 
-// HELPER FUNCTIONS
+// WEBSOCKET/DATABASE HELPER FUNCTIONS
 
 async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
@@ -220,7 +294,7 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     all_messages_json
 }
 
-// INDEX HANDLING
+// WEBSOCKET INDEX HANDLING
 /**
 TODO HERE
 Perform left outer join to get user name from user table
@@ -230,20 +304,34 @@ async fn index(
     req: HttpRequest,
     stream: web::Payload,
     id: Identity,
+    shared_reset_actor: web::Data<Addr<ResetActor>>,
+    ws_addr_data: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>, RandomState>>>,
 ) -> Result<HttpResponse, Error> {
+    // ) -> Result<(Addr<WebSocketActor>, HttpResponse), Error> {
     if let Some(id) = id.identity() {
         println!("id index: {}", id)
     } else {
         println!("no id index!")
     }
 
+    let reset_actor = shared_reset_actor.get_ref();
+
+    // Send Ping message.
+    // send() message returns Future object, that resolves to message result
+    let result = reset_actor.send(Ping).await;
+
+    match result {
+        Ok(res) => println!("Got TEST result: {}", res.unwrap()),
+        Err(err) => println!("Got TEST error: {}", err),
+    }
+
     let all_messages = get_all_messages_json(db_pool.clone()).await;
 
     let current_id = id.identity();
 
-    // For some reason the id isn't being sent/read by the WebSocket
-    let response = ws::start(
-        WebSockActor {
+    // let response = ws::start(
+    let act_with_add = ws::start_with_addr(
+        WebSocketActor {
             all_messages,
             db_pool,
             current_id,
@@ -251,10 +339,33 @@ async fn index(
         &req,
         stream,
     );
+
+    let ws_add;
+    let response;
+
+    match act_with_add {
+        Ok(res) => {
+            ws_add = res.0;
+            let ws_addr = ws_addr_data.get_ref();
+            ws_addr
+                .lock()
+                .unwrap()
+                .insert("ws_addr".to_string(), ws_add);
+            response = Ok(res.1);
+        }
+        Err(e) => {
+            println!("Err actor with add: {:?}", e);
+            panic!();
+        }
+    }
+
+    // act_with_add
     response
 }
 
-// AUTH HANDLING
+// let address_map = ws_addr.get_ref();
+// address_map.insert("ws_addr".to_string(), ws_add);
+// // AUTH HANDLING
 
 #[derive(Serialize, Deserialize, Debug)]
 struct SignInSignUp {
@@ -336,11 +447,21 @@ async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) 
     else
         -> send failed attempt message
 */
-async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
+async fn login(
+    id: Identity,
+    req_body: String,
+    db_pool: web::Data<SqlitePool>,
+    shared_ws_addr: web::Data<HashMap<String, Addr<WebSocketActor>, RandomState>>,
+) -> HttpResponse {
     // id.remember("User1".to_owned()); // <- remember identity
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
     let user_name = &body_json.user_name;
     let password = &body_json.password;
+
+    let add = shared_ws_addr.get_ref();
+    // println!("ws add: {:?}", add);
+
+    println!("Hello?");
 
     // Check for user name
     match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
@@ -375,9 +496,16 @@ async fn login(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -
     }
 }
 
-async fn logout(id: Identity) -> HttpResponse {
+async fn logout(
+    id: Identity,
+    shared_ws_addr: web::Data<HashMap<String, Addr<WebSocketActor>, RandomState>>,
+) -> HttpResponse {
     // id.forget(); // <- remove identity
     // HttpResponse::Ok().finish()
+
+    let add = shared_ws_addr.get_ref();
+
+    println!("ws add: {:?}", add);
 
     // FOR TESTING
     if let Some(id) = id.identity() {
@@ -395,17 +523,25 @@ async fn main() -> std::io::Result<()> {
     // set env variables for sqlx
     dotenv().ok();
 
-    // WATCH FOR CHANGES
+    // Start ResetActor in current thread
+    let reset_actor_addr = ResetActor.start();
+    let shared_reset_actor = web::Data::new(reset_actor_addr);
+
+    // Saving the address
+    let ws_addr: HashMap<String, Addr<WebSocketActor>> = HashMap::new();
+    let shared_ws_addr = web::Data::new(Mutex::new(ws_addr));
+
+    // WATCH FOR FILE CHANGES FOR HOT RELOADING
     let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
     hotwatch
         .watch("./chat_socket/build", |event: Event| {
-            if let Event::Write(path) = event {
+            if let Event::Write(_path) = event {
                 println!("Changes in front-end");
             }
         })
         .expect("failed to watch file!");
 
-    // pool constructed here for all actors
+    // DB POOL
     let db_pool = SqlitePoolOptions::new()
         .max_connections(5)
         .connect("sqlite://./chat.db")
@@ -414,7 +550,8 @@ async fn main() -> std::io::Result<()> {
 
     let shared_db_pool = web::Data::new(db_pool);
 
-    // Generate a random 32 byte key. Note that it is important to use a unique
+    // GENERATE A RANDOM 32 BYTE KEY.
+    // Note that it is important to use a unique
     // private key for every project. Anyone with access to the key can generate
     // authentication cookies for any user!
     let private_key = rand::thread_rng().gen::<[u8; 32]>();
@@ -435,6 +572,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
+            .app_data(shared_reset_actor.clone())
+            .app_data(shared_ws_addr.clone())
             // the different endpoints
             .route("/signup/", web::post().to(signup))
             .route("/login/", web::post().to(login))
