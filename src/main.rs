@@ -1,30 +1,29 @@
 use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
-use actix_cors::Cors;
 use actix_files as fs;
 use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
 use actix_web::{
-    http::header, middleware::Logger, web, App, Either, Error, HttpRequest, HttpResponse,
-    HttpServer, Result,
+    middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
 };
 use actix_web_actors::ws::{self, WebsocketContext};
-use argon2::{self, Config};
+use argon2::{self};
 use chrono;
 use chrono::prelude::*;
 use dotenv::dotenv;
-use fs::NamedFile;
 use hotwatch::{Event, Hotwatch};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sqlx::prelude;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::collections::HashMap;
-// use actix_web::{HttpRequest, Result};
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 mod watcher;
-use std::collections::hash_map::RandomState;
+
+// UNNEEDED CURRENTLY
+// use actix_cors::Cors;
+// use std::path::PathBuf;
+// use fs::NamedFile;
+// use sqlx::prelude;
 
 const SALT: &[u8] = b"randomsaltyness";
 
@@ -40,6 +39,15 @@ struct User {
 #[derive(Serialize, Deserialize, Debug)]
 struct DatabaseMessage {
     id: i64,
+    user_id: i64,
+    room_id: i64,
+    message: String,
+    #[serde(default = "default_time")]
+    time: NaiveDateTime,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct MessageToDatabase {
     user_id: i64,
     room_id: i64,
     message: String,
@@ -104,7 +112,7 @@ struct ResetMessage;
 struct WebSocketActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
-    current_id: Option<String>,
+    signed_in_user: Option<String>,
 }
 
 impl Actor for WebSocketActor {
@@ -150,19 +158,21 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         // let ws_addr = ctx.address();
 
-        if let Some(id) = &self.current_id {
+        if let Some(id) = &self.signed_in_user {
             println!("id in stream handler {}", id)
         } else {
             println!("No id stream handler!")
         }
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
-            Ok(ws::Message::Text(json_message)) => {
-                message_handler(json_message, self.db_pool.clone(), self.current_id.clone())
-                    .into_actor(self)
-                    .map(|text, _, ctx| ctx.text(text))
-                    .wait(ctx)
-            }
+            Ok(ws::Message::Text(json_message)) => message_handler(
+                json_message,
+                self.db_pool.clone(),
+                self.signed_in_user.clone(),
+            )
+            .into_actor(self)
+            .map(|text, _, ctx| ctx.text(text))
+            .wait(ctx),
             Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
             _ => (),
         }
@@ -170,7 +180,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("StreamHandler STARTED");
-        if let Some(id) = &self.current_id {
+        if let Some(id) = &self.signed_in_user {
             println!("id stream handler started: {}", id)
         } else {
             println!("no id stream handler started!")
@@ -200,7 +210,7 @@ check message format and do not perform action if message format is not correct
 async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
-    current_id: Option<String>,
+    signed_in_user: Option<String>,
 ) -> String {
     // println!("client message {:?}", received_client_message);
 
@@ -209,41 +219,74 @@ async fn message_handler(
 
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
-    if let Some(id) = current_id {
+    if let Some(id) = signed_in_user {
         println!("id message handler: {}", id)
     } else {
         println!("no id message handler!")
     }
 
-    // println!("client object: {:?}", from_client);
-
-    let response;
-
-    // check if signed in
-
-    let sent_to_client: SentToClient =
-        serde_json::from_str(&from_client.message).expect("parsing from_client msg");
-
-    // ADD TO MESSAGES
-    // sqlx::query!(
-    //     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-    //     from_client.user_id,
-    //     from_client.room_id,
-    //     from_client.message,
-    //     from_client.time
-    // )
-    // .execute(db_pool.get_ref())
-    // .await
-    // .expect("query insert message error");
-
-    response = ResponseToClient {
+    let response_struct = ResponseToClient {
         all_messages: all_messages_json.to_string(),
         signed_in: false,
         id: "Henry".to_string(),
         message_to_client: "None".to_string(),
     };
 
-    json!(response).to_string()
+    let response = json!(response_struct).to_string();
+
+    // check if signed in
+
+    match signed_in_user {
+        Some(id) => {
+            // ADD TO MESSAGES
+
+            // TODO
+            // - get user id based on signed_in_user
+            // - get room id for lobby
+
+            
+
+            let user_id = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
+                .fetch_one(db_pool.get_ref())
+                .await
+                .expect("not found");
+
+            let room_id = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, "lobby".to_string())
+                .fetch_one(db_pool.get_ref())
+                .await
+                .expect("not found");
+
+            let message_to_db = MessageToDatabase {
+                user_id,
+                room_id,
+                message: from_client.message,
+                time: Utc::now().naive_utc(),
+            }
+
+            // let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
+            //     .fetch_one(db_pool.get_ref())
+            //     .await;
+
+            sqlx::query!(
+                r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+                user_id,
+                room_id,
+                from_client.message,
+                
+            )
+            .execute(db_pool.get_ref())
+            .await
+            .expect("query insert message error");
+            response
+        }
+        None => {
+            println!("no current signed in user");
+            response
+        }
+    }
+
+    // let sent_to_client: SentToClient =
+    //     serde_json::from_str(&from_client.message).expect("parsing from_client msg");
 }
 
 // WEBSOCKET/DATABASE HELPER FUNCTIONS
@@ -279,14 +322,14 @@ async fn index(
 
     let all_messages = get_all_messages_json(db_pool.clone()).await;
 
-    let current_id = id.identity();
+    let signed_in_user = id.identity();
 
     // let response = ws::start(
     let act_with_add = ws::start_with_addr(
         WebSocketActor {
             all_messages,
             db_pool,
-            current_id,
+            signed_in_user,
         },
         &req,
         stream,
