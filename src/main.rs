@@ -94,57 +94,10 @@ struct Room {
 #[rtype(result = "Result<bool, std::io::Error>")]
 struct Ping;
 
-// Define ResetActor
-struct ResetActor;
-
-impl Actor for ResetActor {
-    type Context = Context<Self>;
-
-    fn started(&mut self, _: &mut Context<Self>) {
-        println!("ResetActor is alive");
-    }
-
-    fn stopped(&mut self, _: &mut Context<Self>) {
-        println!("ResetActor is stopped");
-    }
-}
-
-/// Define handler for `Ping` message
-impl Handler<Ping> for ResetActor {
-    type Result = Result<bool, std::io::Error>;
-
-    fn handle(&mut self, msg: Ping, ctx: &mut Context<Self>) -> Self::Result {
-        println!("TEST Ping received");
-        Ok(true)
-    }
-}
-
-// TEST WS ACTOR
-
-// Define
-// struct TestWSActor;
-
-// impl Actor for TestWSActor {
-//     type Context = WebsocketContext<Self>;
-//     // type Context = Context<Self>;
-
-//     fn started(&mut self, _: &mut Self::Context) {
-//         println!("TEST WS Actor STARTED");
-//     }
-
-//     fn stopped(&mut self, _: &mut Self::Context) {
-//         println!("TEST WS Actor CLOSED")
-//     }
-// }
-
-// impl Handler<Ping> for TestWSActor {
-//     type Result = Result<bool, std::io::Error>;
-
-//     fn handle(&mut self, msg: Ping, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-//         println!("TEST WS Ping received");
-//         Ok(true)
-//     }
-// }
+/// Define message
+#[derive(Message)]
+#[rtype(result = "Result<bool, std::io::Error>")]
+struct ResetMessage;
 
 // WS ACTOR INSTANTIATION
 #[derive(Debug)]
@@ -176,7 +129,18 @@ impl Handler<Ping> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
 
     fn handle(&mut self, msg: Ping, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        println!("WS Ping received");
+        // println!("WS Ping received");
+        ctx.stop();
+        Ok(true)
+    }
+}
+
+// Handler for Reset Message
+impl Handler<ResetMessage> for WebSocketActor {
+    type Result = Result<bool, std::io::Error>;
+
+    fn handle(&mut self, msg: ResetMessage, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+        self::WebsocketContext::stop(ctx);
         Ok(true)
     }
 }
@@ -304,25 +268,13 @@ async fn index(
     req: HttpRequest,
     stream: web::Payload,
     id: Identity,
-    shared_reset_actor: web::Data<Addr<ResetActor>>,
-    ws_addr_data: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>, RandomState>>>,
+    shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
 ) -> Result<HttpResponse, Error> {
     // ) -> Result<(Addr<WebSocketActor>, HttpResponse), Error> {
     if let Some(id) = id.identity() {
         println!("id index: {}", id)
     } else {
         println!("no id index!")
-    }
-
-    let reset_actor = shared_reset_actor.get_ref();
-
-    // Send Ping message.
-    // send() message returns Future object, that resolves to message result
-    let result = reset_actor.send(Ping).await;
-
-    match result {
-        Ok(res) => println!("Got TEST result: {}", res.unwrap()),
-        Err(err) => println!("Got TEST error: {}", err),
     }
 
     let all_messages = get_all_messages_json(db_pool.clone()).await;
@@ -346,8 +298,8 @@ async fn index(
     match act_with_add {
         Ok(res) => {
             ws_add = res.0;
-            let ws_addr = ws_addr_data.get_ref();
-            ws_addr
+            let hash_ref = shared_hash.get_ref();
+            hash_ref
                 .lock()
                 .unwrap()
                 .insert("ws_addr".to_string(), ws_add);
@@ -451,15 +403,13 @@ async fn login(
     id: Identity,
     req_body: String,
     db_pool: web::Data<SqlitePool>,
-    shared_ws_addr: web::Data<HashMap<String, Addr<WebSocketActor>, RandomState>>,
+    shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+    // shared_hash: web::Data<HashMap<String, Addr<WebSocketActor>>>,
 ) -> HttpResponse {
     // id.remember("User1".to_owned()); // <- remember identity
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
     let user_name = &body_json.user_name;
     let password = &body_json.password;
-
-    let add = shared_ws_addr.get_ref();
-    // println!("ws add: {:?}", add);
 
     println!("Hello?");
 
@@ -476,7 +426,22 @@ async fn login(
             //check if password matches
             match password_match {
                 true => {
+                    // Remember the ID
                     id.remember(user_name.to_owned());
+                    // Reset the WS
+                    let ws_hm = shared_hash.get_ref().lock().unwrap();
+                    let ws_add = ws_hm.get(&"ws_addr".to_string());
+
+                    match ws_add {
+                        Some(add) => {
+                            let result = add.send(Ping).await;
+                            match result {
+                                Ok(res) => println!("Got reset result: {}", res.unwrap()),
+                                Err(err) => println!("Got reset error: {}", err),
+                            }
+                        }
+                        None => println!("no ws add"),
+                    }
                 }
                 false => {}
             }
@@ -498,14 +463,19 @@ async fn login(
 
 async fn logout(
     id: Identity,
-    shared_ws_addr: web::Data<HashMap<String, Addr<WebSocketActor>, RandomState>>,
+    shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
 ) -> HttpResponse {
+    let ws_hm = shared_hash.get_ref().lock().unwrap();
+    let ws_key = "ws_addr".to_string();
+    let ws_add = ws_hm.get(&ws_key);
+
+    match ws_add {
+        Some(add) => println!("ws add: {:?}", add),
+        None => println!("no ws add"),
+    }
+
     // id.forget(); // <- remove identity
     // HttpResponse::Ok().finish()
-
-    let add = shared_ws_addr.get_ref();
-
-    println!("ws add: {:?}", add);
 
     // FOR TESTING
     if let Some(id) = id.identity() {
@@ -523,13 +493,9 @@ async fn main() -> std::io::Result<()> {
     // set env variables for sqlx
     dotenv().ok();
 
-    // Start ResetActor in current thread
-    let reset_actor_addr = ResetActor.start();
-    let shared_reset_actor = web::Data::new(reset_actor_addr);
-
     // Saving the address
     let ws_addr: HashMap<String, Addr<WebSocketActor>> = HashMap::new();
-    let shared_ws_addr = web::Data::new(Mutex::new(ws_addr));
+    let shared_hash = web::Data::new(Mutex::new(ws_addr));
 
     // WATCH FOR FILE CHANGES FOR HOT RELOADING
     let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
@@ -572,8 +538,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
-            .app_data(shared_reset_actor.clone())
-            .app_data(shared_ws_addr.clone())
+            .app_data(shared_hash.clone())
             // the different endpoints
             .route("/signup/", web::post().to(signup))
             .route("/login/", web::post().to(login))
