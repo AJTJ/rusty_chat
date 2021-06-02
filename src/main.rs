@@ -6,7 +6,7 @@ use actix_web::{
     middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
 };
 use actix_web_actors::ws::{self, WebsocketContext};
-use argon2::{self};
+use argon2::{self, Config};
 use chrono;
 use chrono::prelude::*;
 use dotenv::dotenv;
@@ -58,8 +58,6 @@ struct MessageToDatabase {
 #[derive(Serialize, Deserialize, Debug)]
 struct FromClient {
     message: String,
-    user_name: String,
-    password: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -78,15 +76,7 @@ fn default_time() -> NaiveDateTime {
 #[derive(Serialize, Deserialize, Debug)]
 struct ResponseToClient {
     all_messages: String,
-    signed_in: bool,
-    #[serde(default = "default_id")]
-    id: String,
-    // Currently making it a string that says "None" so that the front-end doesn't display it.
     message_to_client: String,
-}
-
-fn default_id() -> String {
-    "Anonymous".to_string()
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -95,14 +85,7 @@ struct Room {
     name: String,
 }
 
-// RESET ACTOR INSTANTIATION
-
-/// Define message
-#[derive(Message)]
-#[rtype(result = "Result<bool, std::io::Error>")]
-struct Ping;
-
-/// Define message
+/// Define message for resetting the ws
 #[derive(Message)]
 #[rtype(result = "Result<bool, std::io::Error>")]
 struct ResetMessage;
@@ -132,22 +115,11 @@ impl Actor for WebSocketActor {
     }
 }
 
-// Handler for Ping Message
-impl Handler<Ping> for WebSocketActor {
-    type Result = Result<bool, std::io::Error>;
-
-    fn handle(&mut self, msg: Ping, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        // println!("WS Ping received");
-        ctx.stop();
-        Ok(true)
-    }
-}
-
 // Handler for Reset Message
 impl Handler<ResetMessage> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
 
-    fn handle(&mut self, msg: ResetMessage, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+    fn handle(&mut self, _: ResetMessage, ctx: &mut WebsocketContext<Self>) -> Self::Result {
         self::WebsocketContext::stop(ctx);
         Ok(true)
     }
@@ -156,13 +128,6 @@ impl Handler<ResetMessage> for WebSocketActor {
 // WS STREAM HANDLER
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        // let ws_addr = ctx.address();
-
-        if let Some(id) = &self.signed_in_user {
-            println!("id in stream handler {}", id)
-        } else {
-            println!("No id stream handler!")
-        }
         match msg {
             Ok(ws::Message::Ping(msg)) => ctx.pong(&msg),
             Ok(ws::Message::Text(json_message)) => message_handler(
@@ -180,16 +145,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("StreamHandler STARTED");
-        if let Some(id) = &self.signed_in_user {
-            println!("id stream handler started: {}", id)
-        } else {
-            println!("no id stream handler started!")
-        }
+
         let response = ResponseToClient {
             all_messages: self.all_messages.to_string(),
-            signed_in: false,
-            id: "Henry".to_string(),
-            message_to_client: "None".to_string(),
+            message_to_client: "Welcome!".to_string(),
         };
         ctx.text(json!(response).to_string());
     }
@@ -199,12 +158,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     }
 }
 
-/**
-TODO HERE
-upon receival of message
-check message format and do not perform action if message format is not correct
-*/
-
 // WEBSOCKET MESSAGE HANDLING
 
 async fn message_handler(
@@ -212,85 +165,68 @@ async fn message_handler(
     db_pool: web::Data<SqlitePool>,
     signed_in_user: Option<String>,
 ) -> String {
-    // println!("client message {:?}", received_client_message);
-
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
 
-    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
-
-    if let Some(id) = signed_in_user {
-        println!("id message handler: {}", id)
-    } else {
-        println!("no id message handler!")
-    }
-
-    let response_struct = ResponseToClient {
-        all_messages: all_messages_json.to_string(),
-        signed_in: false,
-        id: "Henry".to_string(),
-        message_to_client: "None".to_string(),
-    };
-
-    let response = json!(response_struct).to_string();
-
-    // check if signed in
+    let default_room = "lobby".to_string();
 
     match signed_in_user {
         Some(id) => {
             // ADD TO MESSAGES
-
-            // TODO
-            // - get user id based on signed_in_user
-            // - get room id for lobby
-
-            
-
-            let user_id = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
+            let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
                 .fetch_one(db_pool.get_ref())
                 .await
-                .expect("not found");
+                .expect("user_id_record not found");
 
-            let room_id = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, "lobby".to_string())
+            let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
                 .fetch_one(db_pool.get_ref())
                 .await
-                .expect("not found");
+                .expect("room_id_record not found");
 
             let message_to_db = MessageToDatabase {
-                user_id,
-                room_id,
+                user_id: user_id_record.id,
+                room_id: room_id_record.id,
                 message: from_client.message,
                 time: Utc::now().naive_utc(),
-            }
+            };
 
-            // let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
-            //     .fetch_one(db_pool.get_ref())
-            //     .await;
+            let current_time = Utc::now().naive_utc();
 
             sqlx::query!(
                 r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-                user_id,
-                room_id,
-                from_client.message,
-                
+                message_to_db.user_id,
+                message_to_db.room_id,
+                message_to_db.message,
+                current_time
             )
             .execute(db_pool.get_ref())
             .await
             .expect("query insert message error");
-            response
+
+            let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+            let response_struct = ResponseToClient {
+                all_messages: all_messages_json.to_string(),
+                message_to_client: "".to_string(),
+            };
+
+            json!(response_struct).to_string()
         }
         None => {
-            println!("no current signed in user");
-            response
+            let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+            let mut response_struct = ResponseToClient {
+                all_messages: all_messages_json.to_string(),
+                message_to_client: "".to_string(),
+            };
+
+            response_struct.message_to_client = "Not Signed In".to_string();
+            json!(response_struct).to_string()
         }
     }
-
-    // let sent_to_client: SentToClient =
-    //     serde_json::from_str(&from_client.message).expect("parsing from_client msg");
 }
 
-// WEBSOCKET/DATABASE HELPER FUNCTIONS
-
+// HELPER FUNCTIONS
 async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
         sqlx::query_as!(DatabaseMessage, "SELECT * FROM message ORDER BY time")
@@ -301,11 +237,26 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     all_messages_json
 }
 
+// "SELECT * FROM message ORDER BY time"
+// "SELECT * FROM message LEFT JOIN user ON message.user_id=user.id ORDER BY time"
+
+async fn reset_ws(shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>) {
+    let ws_hm = shared_hash.get_ref().lock().unwrap();
+    let ws_key = "ws_addr".to_string();
+    let ws_add = ws_hm.get(&ws_key);
+    match ws_add {
+        Some(add) => {
+            let result = add.send(ResetMessage).await;
+            match result {
+                Ok(res) => println!("Got reset result: {}", res.unwrap()),
+                Err(err) => println!("Got reset error: {}", err),
+            }
+        }
+        None => println!("no ws add"),
+    }
+}
+
 // WEBSOCKET INDEX HANDLING
-/**
-TODO HERE
-Perform left outer join to get user name from user table
-*/
 async fn index(
     db_pool: web::Data<SqlitePool>,
     req: HttpRequest,
@@ -313,15 +264,7 @@ async fn index(
     id: Identity,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
 ) -> Result<HttpResponse, Error> {
-    // ) -> Result<(Addr<WebSocketActor>, HttpResponse), Error> {
-    if let Some(id) = id.identity() {
-        println!("id index: {}", id)
-    } else {
-        println!("no id index!")
-    }
-
     let all_messages = get_all_messages_json(db_pool.clone()).await;
-
     let signed_in_user = id.identity();
 
     // let response = ws::start(
@@ -342,6 +285,7 @@ async fn index(
         Ok(res) => {
             ws_add = res.0;
             let hash_ref = shared_hash.get_ref();
+            // SAVE WS ADDRESS
             hash_ref
                 .lock()
                 .unwrap()
@@ -350,89 +294,77 @@ async fn index(
         }
         Err(e) => {
             println!("Err actor with add: {:?}", e);
+            // FORCE PANIC SINCE WS IS NOT ABLE TO BE CLOSED
             panic!();
         }
     }
-
-    // act_with_add
     response
 }
 
-// let address_map = ws_addr.get_ref();
-// address_map.insert("ws_addr".to_string(), ws_add);
-// // AUTH HANDLING
-
+// AUTH HANDLING
 #[derive(Serialize, Deserialize, Debug)]
 struct SignInSignUp {
     user_name: String,
     password: String,
 }
 
-// sqlx::query!(
-//     r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-//     from_client.user_id,
-//     from_client.room_id,
-//     from_client.message,
-//     from_client.time
-// )
-// .execute(db_pool.get_ref())
-// .await
-// .expect("query insert message error");
 
-/**
-    SIGN UP
-    Graceful error if receiving wrong data from frontend.
-    Check database if name exists or user is already logged in
-        if exists/logged in -> send response to client
-    else
-        -> save user_name + password in db
-        -> sign-in the user
-*/
-async fn signup(id: Identity, req_body: String, db_pool: web::Data<SqlitePool>) -> HttpResponse {
-    // println!("Signup request body: {:?}", req_body);
-    // let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in signup body");
-    // let user_name = &body_json.user_name;
-    // let password = body_json.password;
+// SIGN UP
+async fn signup(
+    id: Identity,
+    req_body: String,
+    db_pool: web::Data<SqlitePool>,
+    shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+) -> HttpResponse {
+    println!("Signup request body: {:?}", req_body);
+    let body_json: SignInSignUp =
+        serde_json::from_str(&req_body).expect("Error in Client msg to sign in");
+    let user_name = &body_json.user_name;
+    let password = body_json.password;
 
-    // // check if user name exists
-    // let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
-    //     .fetch_one(db_pool.get_ref())
-    //     .await;
-
-    // match user {
-    //     // If user name exists, exit the process
-    //     Ok(user) => {
-    //         println!("user ALREADY exists, {:?}", user);
-    //         HttpResponse::Ok().finish()
-    //     }
-    //     // if user does NOT exist, then sign them up
-    //     Err(user) => {
-    //         println!("user does not exist, thus we are saving them, {:?}", user);
-    //         let config = Config::default();
-    //         let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
-
-    //         // SAVE THE USER
-    //         sqlx::query!(
-    //             r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
-    //             user_name,
-    //             password_hash
-    //         )
-    //         .execute(db_pool.get_ref())
-    //         .await
-    //         .expect("Saving new user did NOT work");
-
-    //         // save the user for this session
-    //         id.remember(body_json.user_name.to_owned());
-    //         HttpResponse::Ok().finish()
-    //     }
-    // }
-    // FOR TESTING COOKIE STUFF
-    if let Some(id) = id.identity() {
-        println!("id signup {}", id)
-    } else {
-        println!("no id signup!")
+    let current_user = id.identity();
+    match current_user {
+        Some(_) => {
+            println!("Currently signed in");
+            HttpResponse::Ok().finish();
+        }
+        None => {}
     }
-    HttpResponse::Ok().finish()
+
+    // check if user name exists
+    let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
+        .fetch_one(db_pool.get_ref())
+        .await;
+
+    match user {
+        // If user name exists, exit the process
+        Ok(user) => {
+            println!("user ALREADY exists, {:?}", user);
+            HttpResponse::Ok().finish()
+        }
+        // if user does NOT exist, then sign them up
+        Err(user) => {
+            println!("user does not exist, thus we are saving them, {:?}", user);
+            let config = Config::default();
+            let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
+
+            // SAVE THE USER
+            sqlx::query!(
+                r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
+                user_name,
+                password_hash
+            )
+            .execute(db_pool.get_ref())
+            .await
+            .expect("Saving new user did NOT work");
+
+            // save the user for this session
+            id.remember(body_json.user_name.to_owned());
+            // reset ws
+            reset_ws(shared_hash).await;
+            HttpResponse::Ok().finish()
+        }
+    }
 }
 /**
     LOGIN
@@ -447,14 +379,10 @@ async fn login(
     req_body: String,
     db_pool: web::Data<SqlitePool>,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
-    // shared_hash: web::Data<HashMap<String, Addr<WebSocketActor>>>,
 ) -> HttpResponse {
-    // id.remember("User1".to_owned()); // <- remember identity
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
     let user_name = &body_json.user_name;
     let password = &body_json.password;
-
-    println!("Hello?");
 
     // Check for user name
     match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
@@ -462,39 +390,21 @@ async fn login(
         .await
     {
         Ok(user_record) => {
-            // println!("user exists, {:?}", user_record);
             let pw_hash = user_record.password;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
-            println!("{:?}, {:?}", password, pw_hash);
+
             //check if password matches
             match password_match {
                 true => {
                     // Remember the ID
                     id.remember(user_name.to_owned());
                     // Reset the WS
-                    let ws_hm = shared_hash.get_ref().lock().unwrap();
-                    let ws_add = ws_hm.get(&"ws_addr".to_string());
-
-                    match ws_add {
-                        Some(add) => {
-                            let result = add.send(Ping).await;
-                            match result {
-                                Ok(res) => println!("Got reset result: {}", res.unwrap()),
-                                Err(err) => println!("Got reset error: {}", err),
-                            }
-                        }
-                        None => println!("no ws add"),
-                    }
+                    reset_ws(shared_hash).await;
                 }
-                false => {}
+                false => {
+                    println!("password does not match");
+                }
             }
-
-            if let Some(id) = id.identity() {
-                println!("id in login: {:?}", id)
-            } else {
-                println!("No id login")
-            }
-
             HttpResponse::Ok().finish()
         }
         Err(user) => {
@@ -508,24 +418,8 @@ async fn logout(
     id: Identity,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
 ) -> HttpResponse {
-    let ws_hm = shared_hash.get_ref().lock().unwrap();
-    let ws_key = "ws_addr".to_string();
-    let ws_add = ws_hm.get(&ws_key);
-
-    match ws_add {
-        Some(add) => println!("ws add: {:?}", add),
-        None => println!("no ws add"),
-    }
-
-    // id.forget(); // <- remove identity
-    // HttpResponse::Ok().finish()
-
-    // FOR TESTING
-    if let Some(id) = id.identity() {
-        println!("id in login: {:?}", id)
-    } else {
-        println!("No id login")
-    }
+    id.forget(); // <- remove identity
+    reset_ws(shared_hash).await;
     HttpResponse::Ok().finish()
 }
 
@@ -549,7 +443,6 @@ async fn main() -> std::io::Result<()> {
             }
         })
         .expect("failed to watch file!");
-
     // DB POOL
     let db_pool = SqlitePoolOptions::new()
         .max_connections(5)
@@ -579,7 +472,6 @@ async fn main() -> std::io::Result<()> {
                 ),
             )
             .wrap(Logger::default())
-            // pass a clone of the pool to the request
             .app_data(shared_db_pool.clone())
             .app_data(shared_hash.clone())
             // the different endpoints
