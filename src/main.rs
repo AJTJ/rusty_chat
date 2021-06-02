@@ -42,8 +42,8 @@ struct DatabaseMessage {
     user_id: i64,
     room_id: i64,
     message: String,
-    #[serde(default = "default_time")]
     time: NaiveDateTime,
+    name: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -75,8 +75,10 @@ fn default_time() -> NaiveDateTime {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct ResponseToClient {
+    user_name: String,
     all_messages: String,
     message_to_client: String,
+    all_users: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -96,6 +98,8 @@ struct WebSocketActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: Option<String>,
+    all_users: Vec<String>,
+    // remove_user: String,
 }
 
 impl Actor for WebSocketActor {
@@ -134,6 +138,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 json_message,
                 self.db_pool.clone(),
                 self.signed_in_user.clone(),
+                self.all_users.clone(),
             )
             .into_actor(self)
             .map(|text, _, ctx| ctx.text(text))
@@ -146,9 +151,16 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("StreamHandler STARTED");
 
+        let msg = match self.signed_in_user.clone() {
+            Some(u) => format!("Welcome {}!", u),
+            None => "Welcome!".to_string(),
+        };
+
         let response = ResponseToClient {
+            user_name: self.signed_in_user.clone().unwrap_or("".to_string()),
             all_messages: self.all_messages.to_string(),
-            message_to_client: "Welcome!".to_string(),
+            message_to_client: msg,
+            all_users: self.all_users.clone(),
         };
         ctx.text(json!(response).to_string());
     }
@@ -159,11 +171,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 }
 
 // WEBSOCKET MESSAGE HANDLING
-
 async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: Option<String>,
+    all_users: Vec<String>,
 ) -> String {
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
@@ -206,8 +218,10 @@ async fn message_handler(
             let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
             let response_struct = ResponseToClient {
+                user_name: id,
                 all_messages: all_messages_json.to_string(),
                 message_to_client: "".to_string(),
+                all_users,
             };
 
             json!(response_struct).to_string()
@@ -216,8 +230,10 @@ async fn message_handler(
             let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
             let mut response_struct = ResponseToClient {
+                user_name: "".to_string(),
                 all_messages: all_messages_json.to_string(),
                 message_to_client: "".to_string(),
+                all_users,
             };
 
             response_struct.message_to_client = "Not Signed In".to_string();
@@ -229,16 +245,13 @@ async fn message_handler(
 // HELPER FUNCTIONS
 async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
-        sqlx::query_as!(DatabaseMessage, "SELECT * FROM message ORDER BY time")
+        sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC")
             .fetch_all(db_pool.get_ref())
             .await
             .expect("all messages failure");
     let all_messages_json = json!(&all_messages);
     all_messages_json
 }
-
-// "SELECT * FROM message ORDER BY time"
-// "SELECT * FROM message LEFT JOIN user ON message.user_id=user.id ORDER BY time"
 
 async fn reset_ws(shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>) {
     let ws_hm = shared_hash.get_ref().lock().unwrap();
@@ -263,9 +276,17 @@ async fn index(
     stream: web::Payload,
     id: Identity,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+    all_users: web::Data<Mutex<Vec<String>>>,
 ) -> Result<HttpResponse, Error> {
     let all_messages = get_all_messages_json(db_pool.clone()).await;
     let signed_in_user = id.identity();
+
+    let all_users_clone = all_users.clone();
+
+    let remove_user = move || remove_user_from_users(all_users_clone, id);
+
+    let users = all_users.get_ref().lock().unwrap();
+    println!("All users: {:?}", users);
 
     // let response = ws::start(
     let act_with_add = ws::start_with_addr(
@@ -273,6 +294,8 @@ async fn index(
             all_messages,
             db_pool,
             signed_in_user,
+            all_users: users.clone(),
+            // remove_user,
         },
         &req,
         stream,
@@ -308,13 +331,13 @@ struct SignInSignUp {
     password: String,
 }
 
-
 // SIGN UP
 async fn signup(
     id: Identity,
     req_body: String,
     db_pool: web::Data<SqlitePool>,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+    all_users: web::Data<Mutex<Vec<String>>>,
 ) -> HttpResponse {
     println!("Signup request body: {:?}", req_body);
     let body_json: SignInSignUp =
@@ -343,8 +366,10 @@ async fn signup(
             HttpResponse::Ok().finish()
         }
         // if user does NOT exist, then sign them up
-        Err(user) => {
-            println!("user does not exist, thus we are saving them, {:?}", user);
+        Err(_) => {
+            // going to sign up/sign in, so remove previous user from all users if already there.
+            remove_user_from_users(all_users.clone(), id.clone());
+
             let config = Config::default();
             let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
 
@@ -360,6 +385,11 @@ async fn signup(
 
             // save the user for this session
             id.remember(body_json.user_name.to_owned());
+
+            // add to all users
+            let mut users = all_users.get_ref().lock().unwrap();
+            users.push(user_name.clone());
+
             // reset ws
             reset_ws(shared_hash).await;
             HttpResponse::Ok().finish()
@@ -379,6 +409,7 @@ async fn login(
     req_body: String,
     db_pool: web::Data<SqlitePool>,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+    all_users: web::Data<Mutex<Vec<String>>>,
 ) -> HttpResponse {
     let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
     let user_name = &body_json.user_name;
@@ -392,35 +423,61 @@ async fn login(
         Ok(user_record) => {
             let pw_hash = user_record.password;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
+            let mut msg_to_client = "You are logged in as: ";
 
             //check if password matches
             match password_match {
                 true => {
-                    // Remember the ID
+                    // remove previous user if already logged in
+                    remove_user_from_users(all_users.clone(), id.clone());
+
+                    // Remember the new user
                     id.remember(user_name.to_owned());
+
+                    // add to all users
+                    let mut users = all_users.get_ref().lock().unwrap();
+                    users.push(user_name.clone());
                     // Reset the WS
                     reset_ws(shared_hash).await;
                 }
-                false => {
-                    println!("password does not match");
-                }
+                false => msg_to_client = "Password does not match this user: ",
             }
-            HttpResponse::Ok().finish()
+            HttpResponse::Ok().body(json!(format!("{} {}", msg_to_client, user_name)))
         }
-        Err(user) => {
-            println!("user does not exist, thus no login, {:?}", user);
-            HttpResponse::Ok().finish()
-        }
+        Err(_) => HttpResponse::Ok().body(json!(format!("User name does not exist."))),
     }
+}
+
+fn remove_user_from_users(all_users: web::Data<Mutex<Vec<String>>>, id: Identity) {
+    if let Some(current_id) = id.identity() {
+        println!("current_id: {}", current_id);
+        let mut users = all_users.get_ref().lock().unwrap();
+        let usr_idx = users.iter().position(|x| x == &current_id);
+
+        match usr_idx {
+            Some(idx) => {
+                println!("usr idx {}", idx);
+                users.remove(idx);
+            }
+            None => {}
+        }
+    };
 }
 
 async fn logout(
     id: Identity,
     shared_hash: web::Data<Mutex<HashMap<String, Addr<WebSocketActor>>>>,
+    all_users: web::Data<Mutex<Vec<String>>>,
 ) -> HttpResponse {
-    id.forget(); // <- remove identity
-    reset_ws(shared_hash).await;
-    HttpResponse::Ok().finish()
+    if let Some(_) = id.identity() {
+        // remove id cookie
+        // id.forget();
+        remove_user_from_users(all_users, id);
+        reset_ws(shared_hash).await;
+        HttpResponse::Ok().body(json!(format!("Logged Out.")))
+    } else {
+        HttpResponse::Ok().body(json!(format!("Not logged in.")))
+    }
 }
 
 // MAIN AND DB INSTANTIATION
@@ -433,6 +490,10 @@ async fn main() -> std::io::Result<()> {
     // Saving the address
     let ws_addr: HashMap<String, Addr<WebSocketActor>> = HashMap::new();
     let shared_hash = web::Data::new(Mutex::new(ws_addr));
+
+    // Saving online users
+    let users_vec: Vec<String> = vec![];
+    let all_users = web::Data::new(Mutex::new(users_vec));
 
     // WATCH FOR FILE CHANGES FOR HOT RELOADING
     let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
@@ -474,6 +535,7 @@ async fn main() -> std::io::Result<()> {
             .wrap(Logger::default())
             .app_data(shared_db_pool.clone())
             .app_data(shared_hash.clone())
+            .app_data(all_users.clone())
             // the different endpoints
             .route("/signup/", web::post().to(signup))
             .route("/login/", web::post().to(login))
