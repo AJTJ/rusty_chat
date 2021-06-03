@@ -397,6 +397,10 @@ async fn index(
     let all_messages = get_all_messages_json(db_pool.clone()).await;
     let signed_in_user = id.identity();
 
+    let key_ref = private_key.get_ref();
+
+    println!("privatekey: {:?}", key_ref);
+
     // add user to all users if they are signed in and not already in the list of all users
     match &signed_in_user {
         Some(user) => {
