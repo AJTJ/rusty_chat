@@ -78,6 +78,7 @@ struct ResponseToClient {
     user_name: String,
     all_messages: String,
     message_to_client: String,
+    is_update: bool,
     all_users: Vec<String>,
 }
 
@@ -93,9 +94,9 @@ struct Room {
 struct ResetMessage;
 
 /// Msg to signal a resend of information
-#[derive(Message)]
-#[rtype(result = "Result<bool, std::io::Error>")]
-struct ResendSignal;
+// #[derive(Message)]
+// #[rtype(result = "Result<bool, std::io::Error>")]
+// struct ResendMessage;
 
 /// Msg to resend
 #[derive(Message)]
@@ -110,24 +111,40 @@ struct WebSocketActor {
     signed_in_user: Option<String>,
     all_users: web::Data<Mutex<Vec<String>>>,
     shared_hash: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    private_key: web::Data<[u8; 32]>,
 }
 
 impl Actor for WebSocketActor {
     type Context = ws::WebsocketContext<Self>;
 
-    fn started(&mut self, _: &mut Self::Context) {
+    fn started(&mut self, ctx: &mut Self::Context) {
         println!("WS Actor STARTED");
+        let addr = ctx.address();
+        println!("addr: {:?}", addr);
+        let hash_ref = self.shared_hash.get_ref();
+        let key_ref = self.private_key.get_ref();
+        let mut hash = hash_ref.lock().unwrap();
+        // save ws address under private key
+        hash.insert(key_ref.clone(), addr);
+        println!("the hash: {:?}", hash);
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
-        println!("WS Actor CLOSING");
+        // println!("WS Actor CLOSING");
         Running::Stop
     }
 
     fn stopped(&mut self, _: &mut Self::Context) {
+        println!("WS Actor CLOSED");
         // Remove user from active users if websocket actor closes
         remove_user_from_users(self.all_users.clone(), self.signed_in_user.clone());
-        println!("WS Actor CLOSED")
+
+        // Remove ws addr from hash
+        let hash_ref = self.shared_hash.get_ref();
+        println!("PRE hash ref: {:?}", hash_ref.lock().unwrap());
+        let key_ref = self.private_key.get_ref();
+        hash_ref.lock().unwrap().retain(|&k, _| k != *key_ref);
+        println!("POST hash ref: {:?}", hash_ref.lock().unwrap());
     }
 }
 
@@ -141,26 +158,44 @@ impl Handler<ResetMessage> for WebSocketActor {
     }
 }
 
-// Handler for Resending Information
-impl Handler<ResendSignal> for WebSocketActor {
-    type Result = Result<bool, std::io::Error>;
-
-    fn handle(&mut self, _: ResendSignal, _: &mut WebsocketContext<Self>) -> Self::Result {
-        let addresses = self.shared_hash.get_ref().lock().unwrap();
-        for (_, add) in addresses.iter() {
-            // add.send(Resend);
-        }
-        Ok(true)
-    }
-}
-
-// Handler for Reset Message
+// Handler for Resend Message
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
 
     fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+        println!("In Resend handle");
+        self.update_ws(ctx);
         Ok(true)
     }
+}
+
+impl WebSocketActor {
+    fn update_ws(&mut self, ctx: &mut WebsocketContext<Self>) {
+        update_in_stream(self, ctx, true);
+    }
+}
+
+fn update_in_stream(
+    the_self: &mut WebSocketActor,
+    ctx: &mut WebsocketContext<WebSocketActor>,
+    is_update: bool,
+) {
+    let msg = match the_self.signed_in_user.clone() {
+        Some(u) => format!("Welcome {}!", u),
+        None => "Welcome!".to_string(),
+    };
+
+    let users_struct = the_self.all_users.get_ref().lock().unwrap();
+    let users_struct_clone = users_struct.clone();
+
+    let response = ResponseToClient {
+        user_name: the_self.signed_in_user.clone().unwrap_or("".to_string()),
+        all_messages: the_self.all_messages.to_string(),
+        message_to_client: msg,
+        is_update,
+        all_users: users_struct_clone,
+    };
+    ctx.text(json!(response).to_string());
 }
 
 // WS STREAM HANDLER
@@ -175,36 +210,27 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 self.all_users.clone(),
             )
             .into_actor(self)
-            .map(|text, _, ctx| ctx.text(text))
+            .map(|text, _, inner_ctx| inner_ctx.text(text))
             .wait(ctx),
             Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
             _ => (),
-        }
+        };
+
+        // update other chats
+        resend_ws(self.shared_hash.clone(), self.private_key.clone())
+            .into_actor(self)
+            .map(|_, _, _| println!("in resend map"))
+            .spawn(ctx);
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("StreamHandler STARTED");
-
-        let msg = match self.signed_in_user.clone() {
-            Some(u) => format!("Welcome {}!", u),
-            None => "Welcome!".to_string(),
-        };
-
-        let users_struct = self.all_users.get_ref().lock().unwrap();
-        let users_struct_clone = users_struct.clone();
-
-        let response = ResponseToClient {
-            user_name: self.signed_in_user.clone().unwrap_or("".to_string()),
-            all_messages: self.all_messages.to_string(),
-            message_to_client: msg,
-            all_users: users_struct_clone,
-        };
-        ctx.text(json!(response).to_string());
+        // println!("StreamHandler STARTED");
+        update_in_stream(self, ctx, false);
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
         remove_user_from_users(self.all_users.clone(), self.signed_in_user.clone());
-        println!("StreamHandler FINISHED")
+        // println!("StreamHandler FINISHED")
     }
 }
 
@@ -268,6 +294,7 @@ async fn message_handler(
                 all_messages: all_messages_json.to_string(),
                 message_to_client: msg,
                 all_users: users_struct_clone,
+                is_update: false,
             };
 
             json!(response_struct).to_string()
@@ -280,6 +307,7 @@ async fn message_handler(
                 all_messages: all_messages_json.to_string(),
                 message_to_client: msg,
                 all_users: users_struct_clone,
+                is_update: false,
             };
 
             response_struct.message_to_client = "Not Signed In".to_string();
@@ -318,15 +346,37 @@ async fn reset_ws(
     }
 }
 
+async fn resend_ws(
+    shared_hash: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    private_key: web::Data<[u8; 32]>,
+) {
+    let mut addresses_hashmap = shared_hash.get_ref().lock().unwrap();
+    let key_ref = private_key.get_ref();
+    // hash_ref.lock().unwrap().retain(|&k, _| k != *key_ref);
+    addresses_hashmap.retain(|&k, _| k != *key_ref);
+    println!("ORIGINAL hash: {:?}", shared_hash.lock().unwrap());
+    println!("NEW hash: {:?}", addresses_hashmap);
+    for (_, add) in addresses_hashmap.iter() {
+        let result = add.send(Resend).await;
+        match result {
+            Ok(res) => println!("Got resend result: {}", res.unwrap()),
+            Err(err) => println!("Got resend error: {}", err),
+        }
+    }
+}
+
 fn remove_user_from_users(all_users: web::Data<Mutex<Vec<String>>>, id: Option<String>) {
     if let Some(current_id) = id {
-        println!("current_id: {}", current_id);
+        // println!("current_id: {}", current_id);
         let mut users = all_users.get_ref().lock().unwrap();
         let usr_idx = users.iter().position(|x| x == &current_id);
 
         match usr_idx {
             Some(idx) => {
-                println!("usr idx {}", idx);
+                println!(
+                    "removing user usr idx: {}, current_id: {}",
+                    idx, &current_id
+                );
                 users.remove(idx);
             }
             None => {}
@@ -360,39 +410,19 @@ async fn index(
         None => {}
     }
 
-    let act_with_add = ws::start_with_addr(
+    let response = ws::start(
         WebSocketActor {
             all_messages,
             db_pool,
             signed_in_user,
             all_users: all_users.clone(),
             shared_hash: shared_hash.clone(),
+            private_key: private_key.clone(),
         },
         &req,
         stream,
     );
 
-    let ws_add;
-    let response;
-
-    match act_with_add {
-        Ok(res) => {
-            ws_add = res.0;
-
-            // save ws address under private key
-            let hash_ref = shared_hash.get_ref();
-            let key_ref = private_key.get_ref();
-
-            let mut hash = hash_ref.lock().unwrap();
-            hash.insert(key_ref.clone(), ws_add);
-            response = Ok(res.1);
-        }
-        Err(e) => {
-            println!("Err actor with add: {:?}", e);
-            // FORCE PANIC SINCE WS IS NOT ABLE TO BE CLOSED WITHOUT ADDRESS
-            panic!();
-        }
-    }
     response
 }
 
@@ -412,7 +442,7 @@ async fn signup(
     all_users: web::Data<Mutex<Vec<String>>>,
     private_key: web::Data<[u8; 32]>,
 ) -> HttpResponse {
-    println!("Signup request body: {:?}", req_body);
+    // println!("Signup request body: {:?}", req_body);
     let body_json: SignInSignUp =
         serde_json::from_str(&req_body).expect("Error in Client msg to sign in");
     let user_name = &body_json.user_name;
