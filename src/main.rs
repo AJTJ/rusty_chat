@@ -600,14 +600,14 @@ async fn main() -> std::io::Result<()> {
 
     let shared_db_pool = web::Data::new(db_pool);
 
-    // GENERATE A RANDOM 32 BYTE KEY.
-    // Note that it is important to use a unique
-    // private key for every project. Anyone with access to the key can generate
-    // authentication cookies for any user!
-    let private_key_generated = rand::thread_rng().gen::<[u8; 32]>();
-    let private_key = web::Data::new(private_key_generated);
-
     HttpServer::new(move || {
+        // GENERATE A RANDOM 32 BYTE KEY.
+        // Note that it is important to use a unique
+        // private key for every project. Anyone with access to the key can generate
+        // authentication cookies for any user!
+        let private_key_generated = rand::thread_rng().gen::<[u8; 32]>();
+        let private_key = web::Data::new(private_key_generated);
+
         App::new()
             .wrap(
                 // create identity middleware
