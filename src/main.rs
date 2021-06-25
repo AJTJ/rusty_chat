@@ -126,6 +126,7 @@ impl fmt::Debug for DebugSession {
 }
 
 // WS ACTOR
+#[derive(Debug)]
 struct WebSocketActor {
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
@@ -134,6 +135,7 @@ struct WebSocketActor {
     session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
     signed_in_user: String,
     session_id: String,
+    socket_id: [u8; 32],
 }
 
 impl Actor for WebSocketActor {
@@ -141,6 +143,13 @@ impl Actor for WebSocketActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("WS Actor STARTED");
+        // SAVE SOCKET ADDRESS
+        let all_addresses_ref = self.all_socket_addresses.get_ref();
+        let mut all_sockets = all_addresses_ref.lock().unwrap();
+        let addr = ctx.address();
+        all_sockets.insert(self.socket_id, addr);
+
+        // START HEARTBEAT
         self.hb(ctx);
     }
 
@@ -151,10 +160,15 @@ impl Actor for WebSocketActor {
 
     fn stopped(&mut self, _: &mut Self::Context) {
         println!("WS Actor STOPPED");
-        //REMOVE FROM SESSION
+        //REMOVE USER FROM SESSION
         let session_table_ref = self.session_table_data.get_ref();
         let mut session_table = session_table_ref.lock().unwrap();
         session_table.remove_entry(&self.session_id);
+
+        //REMOVE WS FROM ACTIVE SOCKETS
+        let all_addresses_ref = self.all_socket_addresses.get_ref();
+        let mut all_sockets = all_addresses_ref.lock().unwrap();
+        all_sockets.remove_entry(&self.socket_id);
     }
 }
 
@@ -172,9 +186,9 @@ impl Handler<ResetMessage> for WebSocketActor {
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
 
-    fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+    fn handle(&mut self, _: Resend, _: &mut WebsocketContext<Self>) -> Self::Result {
         println!("In Resend handle");
-        self.update_ws(ctx);
+        // self.update_ws(ctx);
         Ok(true)
     }
 }
@@ -226,6 +240,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 self.signed_in_user.clone(),
                 self.session_table_data.clone(),
                 self.session_id.clone(),
+                self.all_socket_addresses.clone(),
             )
             .into_actor(self)
             .map(|text, _, inner_ctx| inner_ctx.text(text))
@@ -252,6 +267,7 @@ async fn message_handler(
     signed_in_user: String,
     session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
     session_id: String,
+    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
 ) -> String {
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
@@ -302,6 +318,7 @@ async fn message_handler(
             message_to_client: "Awesome".to_string(),
             is_update: false,
         };
+        resend_ws(all_socket_addresses).await;
 
         json!(response_struct).to_string()
     } else {
@@ -326,6 +343,20 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
             .expect("all messages failure");
     let all_messages_json = json!(&all_messages);
     all_messages_json
+}
+
+async fn resend_ws(
+    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+) {
+    let all_addresses_ref = all_socket_addresses.get_ref();
+    let all_sockets = all_addresses_ref.lock().unwrap();
+    for (_, add) in all_sockets.iter() {
+        let result = add.send(Resend).await;
+        match result {
+            Ok(res) => println!("Got resend result: {}", res.unwrap()),
+            Err(err) => println!("Got resend error: {}", err),
+        }
+    }
 }
 
 // WEBSOCKET INDEX HANDLING
@@ -355,6 +386,9 @@ async fn index(
                 session_table.insert(cookie_data.id.clone(), cookie_data.user_name.clone());
             }
 
+            // GENERATE SOCKET ID
+            let socket_id = rand::thread_rng().gen::<[u8; 32]>();
+
             // OPEN SOCKET
             let all_messages = get_all_messages_json(db_pool.clone()).await;
             let response = ws::start(
@@ -366,6 +400,7 @@ async fn index(
                     session_table_data: session_table_data.clone(),
                     signed_in_user: cookie_data.user_name.clone(),
                     session_id: cookie_data.id.clone(),
+                    socket_id,
                 },
                 &req,
                 stream,
