@@ -108,15 +108,15 @@ type SessionID = String;
 
 // MESSAGES
 
-/// Used for resetting a websocket
-#[derive(Message)]
-#[rtype(result = "Result<bool, std::io::Error>")]
-struct ResetMessage;
-
 /// Msg to update all the chat info
 #[derive(Message)]
 #[rtype(result = "Result<bool, std::io::Error>")]
 struct Resend;
+
+/// Just a Ping
+#[derive(Message)]
+#[rtype(result = "Result<bool, std::io::Error>")]
+struct Ping;
 
 struct DebugSession(pub Session);
 impl fmt::Debug for DebugSession {
@@ -142,24 +142,25 @@ impl Actor for WebSocketActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        println!("WS Actor STARTED");
         // SAVE SOCKET ADDRESS
         let all_addresses_ref = self.all_socket_addresses.get_ref();
-        let mut all_sockets = all_addresses_ref.lock().unwrap();
         let addr = ctx.address();
-        all_sockets.insert(self.socket_id, addr);
+        all_addresses_ref
+            .lock()
+            .unwrap()
+            .insert(self.socket_id, addr);
 
         // START HEARTBEAT
         self.hb(ctx);
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
-        println!("WS Actor STOPPING");
+        println!("WS STOPPING: {:?}", self.socket_id);
         Running::Stop
     }
 
     fn stopped(&mut self, _: &mut Self::Context) {
-        println!("WS Actor STOPPED");
+        println!("WS STOPPED: {:?}", self.socket_id);
         //REMOVE USER FROM SESSION
         let session_table_ref = self.session_table_data.get_ref();
         let mut session_table = session_table_ref.lock().unwrap();
@@ -169,26 +170,26 @@ impl Actor for WebSocketActor {
         let all_addresses_ref = self.all_socket_addresses.get_ref();
         let mut all_sockets = all_addresses_ref.lock().unwrap();
         all_sockets.remove_entry(&self.socket_id);
-    }
-}
 
-// Handler for Reset Message
-impl Handler<ResetMessage> for WebSocketActor {
-    type Result = Result<bool, std::io::Error>;
-
-    fn handle(&mut self, _: ResetMessage, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        self::WebsocketContext::stop(ctx);
-        Ok(true)
+        // println!("ALL ADDS AFTER REMOVE: {:?}", all_sockets);
     }
 }
 
 // Handler for Resend Message
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
-
-    fn handle(&mut self, _: Resend, _: &mut WebsocketContext<Self>) -> Self::Result {
+    fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
         println!("In Resend handle");
-        // self.update_ws(ctx);
+        self.update_ws(ctx);
+        println!("After resend handle");
+        Ok(true)
+    }
+}
+
+impl Handler<Ping> for WebSocketActor {
+    type Result = Result<bool, std::io::Error>;
+    fn handle(&mut self, _: Ping, _: &mut WebsocketContext<Self>) -> Self::Result {
+        println!("ping received");
         Ok(true)
     }
 }
@@ -231,6 +232,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
         match msg {
             Ok(ws::Message::Ping(_)) => {}
+            Ok(ws::Message::Close(_)) => ctx.stop(),
             Ok(ws::Message::Pong(_)) => {
                 self.hb = Instant::now();
             }
@@ -252,11 +254,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         update_in_stream(self, ctx, false);
-        println!("StreamHandler STARTED");
+        // println!("StreamHandler STARTED");
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
-        println!("StreamHandler FINISHED")
+        // println!("StreamHandler FINISHED")
     }
 }
 
@@ -269,69 +271,73 @@ async fn message_handler(
     session_id: String,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
 ) -> String {
-    let from_client: FromClient = serde_json::from_str(&received_client_message)
-        .expect("parsing received_client_message msg");
+    // let from_client: FromClient = serde_json::from_str(&received_client_message)
+    //     .expect("parsing received_client_message msg");
 
-    let default_room = "lobby".to_string();
-    let id = signed_in_user;
+    // let default_room = "lobby".to_string();
+    // let id = signed_in_user;
 
-    //CHECK IF SESSION IS STILL OPEN
-    let session_table_ref = session_table_data.get_ref();
-    let session_table = session_table_ref.lock().unwrap();
-    if session_table.contains_key(&session_id) {
-        // ADD TO MESSAGES
-        let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
-            .fetch_one(db_pool.get_ref())
-            .await
-            .expect("user_id_record not found");
+    // //CHECK IF SESSION IS STILL OPEN
+    // let session_table_ref = session_table_data.get_ref();
+    // let session_table = session_table_ref.lock().unwrap();
+    // if session_table.contains_key(&session_id) {
+    //     // ADD TO MESSAGES
+    //     let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
+    //         .fetch_one(db_pool.get_ref())
+    //         .await
+    //         .expect("user_id_record not found");
 
-        let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
-            .fetch_one(db_pool.get_ref())
-            .await
-            .expect("room_id_record not found");
+    //     let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
+    //         .fetch_one(db_pool.get_ref())
+    //         .await
+    //         .expect("room_id_record not found");
 
-        let message_to_db = MessageToDatabase {
-            user_id: user_id_record.id,
-            room_id: room_id_record.id,
-            message: from_client.message,
-            time: Utc::now().naive_utc(),
-        };
+    //     let message_to_db = MessageToDatabase {
+    //         user_id: user_id_record.id,
+    //         room_id: room_id_record.id,
+    //         message: from_client.message,
+    //         time: Utc::now().naive_utc(),
+    //     };
 
-        let current_time = Utc::now().naive_utc();
+    //     let current_time = Utc::now().naive_utc();
 
-        sqlx::query!(
-            r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-            message_to_db.user_id,
-            message_to_db.room_id,
-            message_to_db.message,
-            current_time
-        )
-        .execute(db_pool.get_ref())
-        .await
-        .expect("query insert message error");
+    //     sqlx::query!(
+    //         r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+    //         message_to_db.user_id,
+    //         message_to_db.room_id,
+    //         message_to_db.message,
+    //         current_time
+    //     )
+    //     .execute(db_pool.get_ref())
+    //     .await
+    //     .expect("query insert message error");
 
-        let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+    //     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
-        let response_struct = ResponseToClient {
-            user_name: id,
-            all_messages: all_messages_json.to_string(),
-            message_to_client: "Awesome".to_string(),
-            is_update: false,
-        };
-        resend_ws(all_socket_addresses).await;
+    //     let response_struct = ResponseToClient {
+    //         user_name: id,
+    //         all_messages: all_messages_json.to_string(),
+    //         message_to_client: "Awesome".to_string(),
+    //         is_update: false,
+    //     };
+    //     resend_ws(all_socket_addresses).await;
 
-        json!(response_struct).to_string()
-    } else {
-        let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+    //     println!("after resend");
 
-        let response_struct = ResponseToClient {
-            user_name: "".to_string(),
-            all_messages: all_messages_json.to_string(),
-            message_to_client: "You are not signed in".to_string(),
-            is_update: false,
-        };
-        json!(response_struct).to_string()
-    }
+    //     json!(response_struct).to_string()
+    // } else {
+    resend_ws(all_socket_addresses).await;
+    println!("after trying resend");
+    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    let response_struct = ResponseToClient {
+        user_name: "".to_string(),
+        all_messages: all_messages_json.to_string(),
+        message_to_client: "You are not signed in".to_string(),
+        is_update: false,
+    };
+    json!(response_struct).to_string()
+    // }
 }
 
 // HELPER FUNCTIONS
@@ -349,9 +355,19 @@ async fn resend_ws(
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
 ) {
     let all_addresses_ref = all_socket_addresses.get_ref();
-    let all_sockets = all_addresses_ref.lock().unwrap();
-    for (_, add) in all_sockets.iter() {
-        let result = add.send(Resend).await;
+    let all_sockets = all_addresses_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, add)| {
+            println!("sending to: {:?}", add);
+            add.send(Ping)
+        })
+        .collect::<Vec<_>>();
+
+    for sock in all_sockets {
+        // HANGS ON THIS AWAIT
+        let result = sock.await;
         match result {
             Ok(res) => println!("Got resend result: {}", res.unwrap()),
             Err(err) => println!("Got resend error: {}", err),
@@ -408,7 +424,10 @@ async fn index(
 
             response
         }
-        None => Ok(HttpResponse::Ok().finish()),
+        None => {
+            println!("no cookie, no ws");
+            Ok(HttpResponse::Ok().finish())
+        }
     }
 }
 
@@ -525,8 +544,14 @@ async fn logout(
             let cookie_data: CookieStruct =
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
+
             // REMOVE COOKIE
-            HttpResponse::Ok().del_cookie(&cookie).finish()
+            let mut builder = HttpResponse::Ok();
+            if let Some(ref cookie) = req.cookie(COOKIE_NAME) {
+                println!("there is a cookie to delete");
+                builder.del_cookie(cookie);
+            }
+            builder.finish()
         }
         None => HttpResponse::Ok().finish(),
     }
