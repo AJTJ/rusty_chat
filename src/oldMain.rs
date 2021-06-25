@@ -2,10 +2,9 @@ use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
 use actix_files as fs;
 use actix_identity::{CookieIdentityPolicy, Identity, IdentityService};
-use actix_session::Session;
-use actix_web::HttpMessage;
+use actix_session::{CookieSession, Session};
 use actix_web::{
-    cookie, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
+    middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
 };
 use actix_web_actors::ws::{self, WebsocketContext};
 use argon2::{self, Config};
@@ -115,6 +114,11 @@ impl fmt::Debug for DebugSession {
     }
 }
 
+// Basic Ping message
+#[derive(Message)]
+#[rtype(result = "Result<bool, std::io::Error>")]
+struct Ping;
+
 // Attempting to get identity
 #[derive(Message)]
 #[rtype(result = "Result<bool, std::io::Error>")]
@@ -163,12 +167,18 @@ impl Handler<GetIdentity> for IDActor {
 // WS ACTOR
 // #[derive(Debug)]
 struct WebSocketActor {
+    // id: [u8; 32],
     all_messages: serde_json::Value,
     db_pool: web::Data<SqlitePool>,
+    // signed_in_user: Option<String>,
     all_users: web::Data<Mutex<Vec<String>>>,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    // private_key: web::Data<[u8; 32]>,
+    // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
     hb: Instant,
     req: HttpRequest,
+    // session: Session,
+    id_addr: Addr<IDActor>,
 }
 
 impl Actor for WebSocketActor {
@@ -177,7 +187,7 @@ impl Actor for WebSocketActor {
     fn started(&mut self, ctx: &mut Self::Context) {
         println!("WS Actor STARTED");
         // Start the heartbeats
-        self.hb(ctx);
+        // self.hb(ctx);
 
         // get all_sockets
         let all_addresses_ref = self.all_socket_addresses.get_ref();
@@ -251,9 +261,13 @@ impl WebSocketActor {
     fn hb(&self, ctx: &mut ws::WebsocketContext<Self>) {
         ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
             // check client heartbeats
+            println!("interval started");
             if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
                 // heartbeat timed out
                 println!("Websocket Client heartbeat failed, disconnecting!");
+
+                // notify chat server
+                // act.addr.do_send(server::Disconnect { id: act.id });
 
                 // stop actor
                 self::WebsocketContext::stop(ctx);
@@ -261,7 +275,7 @@ impl WebSocketActor {
                 // don't try to send a ping
                 return;
             }
-            // println!("heartbeat resetting");
+
             ctx.ping(b"");
         });
     }
@@ -290,8 +304,19 @@ fn update_in_stream(
 // WS STREAM HANDLER
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
+        println!("testing idactor in streamhandler");
+        let res = self
+            .id_addr
+            .send(GetIdentity)
+            .into_actor(self)
+            .map(|_, _, _| println!("in thing"))
+            .wait(ctx);
+
         match msg {
-            Ok(ws::Message::Ping(_)) => {}
+            Ok(ws::Message::Ping(msg)) => {
+                self.hb = Instant::now();
+                ctx.pong(&msg)
+            }
             Ok(ws::Message::Pong(_)) => {
                 self.hb = Instant::now();
             }
@@ -302,6 +327,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 // Some("Timmy".to_string()),
                 self.all_users.clone(),
                 // self.req.clone(),
+                self.id_addr.clone(),
             )
             .into_actor(self)
             .map(|text, _, inner_ctx| inner_ctx.text(text))
@@ -309,15 +335,22 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
             Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
             _ => (),
         };
+
+        // update other chats
+        // resend_ws(self.all_socket_addresses.clone(), self.private_key.clone())
+        // .into_actor(self)
+        // .map(|_, _, _| println!("in resend map"))
+        // .spawn(ctx);
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
+        // println!("StreamHandler STARTED");
         update_in_stream(self, ctx, false);
-        println!("StreamHandler STARTED");
     }
 
     fn finished(&mut self, _: &mut Self::Context) {
-        println!("StreamHandler FINISHED")
+        // remove_user_from_users(self.all_users.clone(), self.signed_in_user.clone());
+        // println!("StreamHandler FINISHED")
     }
 }
 
@@ -325,12 +358,94 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
+    // signed_in_user: Option<String>,
     all_users: web::Data<Mutex<Vec<String>>>,
+    id_addr: Addr<IDActor>,
+    // req: HttpRequest,
 ) -> String {
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
 
+    // let cur_id = req.get_identity();
+
+    // match cur_id {
+    //     Some(id) => println!("cur_id {}", id),
+    //     None => println!("no cur id"),
+    // }
+
+    println!("testing idactor");
+    let res = id_addr.send(GetIdentity).await;
+
+    let users_struct = all_users.get_ref().lock().unwrap();
+    let users_struct_clone = users_struct.clone();
+
     let default_room = "lobby".to_string();
+
+    // let msg = match &signed_in_user {
+    //     Some(u) => format!("Welcome {}!", u),
+    //     None => "Welcome!".to_string(),
+    // };
+
+    // match signed_in_user {
+    //     Some(id) => {
+    //         // ADD TO MESSAGES
+    //         let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
+    //             .fetch_one(db_pool.get_ref())
+    //             .await
+    //             .expect("user_id_record not found");
+
+    //         let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
+    //             .fetch_one(db_pool.get_ref())
+    //             .await
+    //             .expect("room_id_record not found");
+
+    //         let message_to_db = MessageToDatabase {
+    //             user_id: user_id_record.id,
+    //             room_id: room_id_record.id,
+    //             message: from_client.message,
+    //             time: Utc::now().naive_utc(),
+    //         };
+
+    //         let current_time = Utc::now().naive_utc();
+
+    //         sqlx::query!(
+    //             r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+    //             message_to_db.user_id,
+    //             message_to_db.room_id,
+    //             message_to_db.message,
+    //             current_time
+    //         )
+    //         .execute(db_pool.get_ref())
+    //         .await
+    //         .expect("query insert message error");
+
+    //         let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    //         let response_struct = ResponseToClient {
+    //             user_name: id,
+    //             all_messages: all_messages_json.to_string(),
+    //             message_to_client: msg,
+    //             all_users: users_struct_clone,
+    //             is_update: false,
+    //         };
+
+    //         json!(response_struct).to_string()
+    //     }
+    //     None => {
+    //         let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    //         let mut response_struct = ResponseToClient {
+    //             user_name: "".to_string(),
+    //             all_messages: all_messages_json.to_string(),
+    //             message_to_client: msg,
+    //             all_users: users_struct_clone,
+    //             is_update: false,
+    //         };
+
+    //         response_struct.message_to_client = "Not Signed In".to_string();
+    //         json!(response_struct).to_string()
+    //     }
+    // }
 
     // FOR SENDING DEFAULT DATA
     let users_struct = all_users.get_ref().lock().unwrap();
@@ -358,6 +473,48 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
             .expect("all messages failure");
     let all_messages_json = json!(&all_messages);
     all_messages_json
+}
+
+async fn reset_ws(
+    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
+) {
+    let ws_hm = all_socket_addresses.get_ref().lock().unwrap();
+    // println!("hashmap: {:?}", ws_hm);
+    // let ws_key = private_key.get_ref();
+    // let key = ws_key.lock().unwrap()[0];
+    // println!("private key: {:?}", ws_key);
+    // // let ws_add = ws_hm.get(&key);
+    // match ws_add {
+    //     Some(add) => {
+    //         let result = add.send(ResetMessage).await;
+    //         match result {
+    //             Ok(res) => println!("Got reset result: {}", res.unwrap()),
+    //             Err(err) => println!("Got reset error: {}", err),
+    //         }
+    //     }
+    //     None => println!("no ws add"),
+    // }
+}
+
+async fn resend_ws(
+    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
+) {
+    let mut addresses_hashmap = all_socket_addresses.get_ref().lock().unwrap();
+    // let key_ref = private_key.get_ref();
+    // let key = key_ref.lock().unwrap()[0];
+    // all_addresses_ref.lock().unwrap().retain(|&k, _| k != *key_ref);
+    // addresses_hashmap.retain(|&k, _| k != key);
+    // println!("ORIGINAL all_sockets: {:?}", all_socket_addresses.lock().unwrap());
+    // println!("NEW all_sockets: {:?}", addresses_hashmap);
+    for (_, add) in addresses_hashmap.iter() {
+        let result = add.send(Resend).await;
+        match result {
+            Ok(res) => println!("Got resend result: {}", res.unwrap()),
+            Err(err) => println!("Got resend error: {}", err),
+        }
+    }
 }
 
 fn remove_user_from_users(all_users: web::Data<Mutex<Vec<String>>>, id: Option<String>) {
@@ -388,8 +545,72 @@ async fn index(
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
     all_users: web::Data<Mutex<Vec<String>>>,
     session: Session,
+    // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
 ) -> Result<HttpResponse, Error> {
     let all_messages = get_all_messages_json(db_pool.clone()).await;
+
+    // if let Some(id) = id.identity() {
+    //     println!("id in index: {}", id);
+    // } else {
+    //     println!("no id in index")
+    // }
+
+    // let sesh: Result<Option<SessionID>> = session.get(SESSION_ID_KEY);
+    // // let signed_in_user: Option<String>;
+
+    // match sesh {
+    //     Ok(s) => {
+    //         if let Some(id) = s {
+    //             println!("Session id index: {}", id);
+    //         } else {
+    //             println!("Result but no id index");
+    //         }
+    //     }
+    //     Err(_) => {
+    //         println!("no result index");
+    //     }
+    // }
+
+    let id_addr = IDActor { session }.start();
+
+    let res = id_addr.send(GetIdentity).await;
+
+    // let signed_in_user = id.identity();
+    // let cur_id = req.get_identity();
+
+    // match cur_id {
+    //     Some(id) => println!("cur_id index {}", id),
+    //     None => println!("no cur id index"),
+    // }
+
+    // let key_ref = private_key.get_ref();
+    // let key = key_ref.lock().unwrap()[0];
+
+    // println!("privatekey: {:?}", key);
+
+    // add user to all users if they are signed in and not already in the list of all users
+    // match &signed_in_user {
+    //     Some(user) => {
+    //         let mut users = all_users.get_ref().lock().unwrap();
+    //         let usr_idx = users.iter().position(|x| x == user);
+    //         match usr_idx {
+    //             Some(_) => {}
+    //             None => {
+    //                 println!("adding user {}", user);
+    //                 users.push(user.clone())
+    //             }
+    //         }
+    //     }
+    //     None => {}
+    // }
+
+    // println!("The ext: {:?}", ext);
+
+    let generated_key = rand::thread_rng().gen::<[u8; 32]>();
+    // println!("the key {:?}", generated_key);
+
+    // let new_id: ServerID = generated_key;
+    // req.extensions_mut().insert(new_id);
 
     let response = ws::start(
         WebSocketActor {
@@ -401,6 +622,7 @@ async fn index(
             hb: Instant::now(),
             req: req.clone(),
             // session,
+            id_addr,
         },
         &req,
         stream,
@@ -416,12 +638,6 @@ struct SignInSignUp {
     password: String,
 }
 
-// fn create_cookie_value() {
-//     let id = rand::thread_rng().gen::<[u8; 16]>();
-//     let cookie_value = base64::encode(id);
-//     let cookie = cookie::Cookie::new("rusty_cookie", cookie_value);
-// }
-
 // SIGN UP
 async fn signup(
     // id: Identity,
@@ -429,8 +645,60 @@ async fn signup(
     db_pool: web::Data<SqlitePool>,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
     all_users: web::Data<Mutex<Vec<String>>>,
+    // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
 ) -> HttpResponse {
-    HttpResponse::Ok().body(json!(format!("New user added")))
+    // println!("Signup request body: {:?}", req_body);
+    let body_json: SignInSignUp =
+        serde_json::from_str(&req_body).expect("Error in Client msg to sign in");
+    let user_name = &body_json.user_name;
+    let password = body_json.password;
+
+    // let current_user = id.identity();
+    // match current_user {
+    //     Some(_) => {
+    //         HttpResponse::Ok().body(json!(format!("Currently signed in")));
+    //     }
+    //     None => {}
+    // }
+
+    // check if user name exists
+    let user = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, user_name)
+        .fetch_one(db_pool.get_ref())
+        .await;
+
+    match user {
+        // If user name exists, exit the process
+        Ok(_) => HttpResponse::Ok().body(json!(format!("User already exists"))),
+        // if user does NOT exist, then sign them up
+        Err(_) => {
+            // going to sign up/sign in, so remove previous user from all users if already there.
+            // remove_user_from_users(all_users.clone(), id.identity());
+
+            let config = Config::default();
+            let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
+
+            // SAVE THE USER
+            sqlx::query!(
+                r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
+                user_name,
+                password_hash
+            )
+            .execute(db_pool.get_ref())
+            .await
+            .expect("Saving new user did NOT work");
+
+            // save the user for this session
+            // id.remember(body_json.user_name.to_owned());
+
+            // add to all users
+            let mut users = all_users.get_ref().lock().unwrap();
+            users.push(user_name.clone());
+
+            // reset ws
+            // reset_ws(all_socket_addresses, private_key).await;
+            HttpResponse::Ok().body(json!(format!("New user added")))
+        }
+    }
 }
 /**
     LOGIN
@@ -441,33 +709,86 @@ async fn login(
     db_pool: web::Data<SqlitePool>,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
     all_users: web::Data<Mutex<Vec<String>>>,
-    req: HttpRequest,
+    req: HttpRequest, // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
     id: Identity,
     session: Session,
 ) -> HttpResponse {
-    let id = rand::thread_rng().gen::<[u8; 16]>();
-    let cookie_value = base64::encode(id);
-    println!("the id {}", cookie_value);
-    let cookie = cookie::Cookie::build("rusty_cookie", cookie_value)
-        .path("/")
-        .secure(false)
-        .http_only(true)
-        .finish();
-    println!("it be logging in, {}", cookie);
-    let res = HttpResponse::Ok().cookie(cookie).finish();
-    res
+    let body_json: SignInSignUp = serde_json::from_str(&req_body).expect("error in login body");
+    let user_name = &body_json.user_name;
+    let password = &body_json.password;
+
+    // let ext = req.extensions();
+    // let server_id_option = ext.get::<ServerID>();
+
+    // match server_id_option {
+    //     Some(id) => println!("id is {:?}", id),
+    //     None => println!("nothing in server_id_option"),
+    // }
+
+    // Check for user name
+    match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
+        .fetch_one(db_pool.get_ref())
+        .await
+    {
+        Ok(user_record) => {
+            let pw_hash = user_record.password;
+            let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
+            let mut msg_to_client = "You are logged in as: ";
+
+            //check if password matches
+            match password_match {
+                true => {
+                    // remove previous user if already logged in
+                    // let current_id = id.identity();
+                    // remove_user_from_users(all_users.clone(), current_id);
+
+                    // Remember the new user
+                    let current_id: SessionID = user_name.to_string();
+
+                    id.remember(current_id.to_owned());
+                    if let Some(id) = id.identity() {
+                        println!("the id is: {}", id);
+                    }
+
+                    let sesh = session.set(SESSION_ID_KEY, &current_id);
+
+                    match sesh {
+                        Ok(_) => println!("session set"),
+                        Err(e) => println!("session not set: {}", e),
+                    }
+
+                    // add to all users
+                    // let mut users = all_users.get_ref().lock().unwrap();
+                    // users.push(user_name.clone());
+                    // Reset the WS
+                    // reset_ws(all_socket_addresses, private_key).await;
+                }
+                false => msg_to_client = "Password does not match this user: ",
+            }
+            HttpResponse::Ok().body(json!(format!("{} {}", msg_to_client, user_name)))
+        }
+        Err(_) => HttpResponse::Ok().body(json!(format!("User name does not exist."))),
+    }
 }
 
 async fn logout(
     // id: Identity,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
     all_users: web::Data<Mutex<Vec<String>>>,
-    session: Session,
-    req: HttpRequest,
+    session: Session, // private_key: web::Data<Mutex<Vec<[u8; 32]>>>,
 ) -> HttpResponse {
-    let cookies = req.cookies();
-    println!("the cookies {:?}", cookies);
-    println!("the req {:?}", req);
+    // if let Some(current_id) = id.identity() {
+    //     // remove from all users
+    //     remove_user_from_users(all_users, Some(current_id));
+    //     // remove auth
+    //     id.forget();
+    //     // reset ws
+    //     // reset_ws(all_socket_addresses, private_key).await;
+    //     HttpResponse::Ok().body(json!(format!("Logged Out.")))
+    // } else {
+    //     HttpResponse::Ok().body(json!(format!("Not logged in.")))
+    // }
+    session.remove(SESSION_ID_KEY);
     HttpResponse::Ok().finish()
 }
 
@@ -506,6 +827,11 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(
+                CookieSession::signed(&[0; 32])
+                    .name("rusty_chat_actix_session")
+                    .secure(false),
+            )
             .wrap(IdentityService::new(
                 // <- create identity middleware
                 CookieIdentityPolicy::new(&[0; 32]) // <- create cookie identity policy
