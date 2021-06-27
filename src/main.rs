@@ -171,20 +171,10 @@ impl Actor for WebSocketActor {
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
     fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        println!("In Resend handle");
         get_update_string(self.signed_in_user.to_string(), false, self.db_pool.clone())
             .into_actor(self)
             .map(|text, _, inner_ctx| inner_ctx.text(text))
             .wait(ctx);
-        println!("After resend handle");
-        Ok(true)
-    }
-}
-
-impl Handler<Ping> for WebSocketActor {
-    type Result = Result<bool, std::io::Error>;
-    fn handle(&mut self, _: Ping, _: &mut WebsocketContext<Self>) -> Self::Result {
-        println!("ping received");
         Ok(true)
     }
 }
@@ -347,18 +337,14 @@ async fn resend_ws(
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, add)| {
-            println!("sending to: {:?}", add);
-            add.try_send(Resend)
-            // send(Ping)
-        })
+        .map(|(_, add)| add.try_send(Resend))
         .collect::<Vec<_>>();
 
     for sock in all_sockets {
         // HANGS ON THIS AWAIT
         let result = sock;
         match result {
-            Ok(res) => println!("Got resend result: {:?}", res),
+            Ok(_) => {}
             Err(err) => println!("Got resend error: {:?}", err),
         }
     }
@@ -382,12 +368,8 @@ async fn index(
             let (_, value) = cookie.name_value();
             let cookie_data: CookieStruct =
                 serde_json::from_str(value).expect("parsing cookie error");
-            if session_table.contains_key(&cookie_data.id) {
-                // SESSION ALREADY EXISTS
-                println!("session already exists")
-            } else {
-                // CREATE SESSION
-                println!("creating session");
+            // CREATE SESSION IF DOESN'T EXIST
+            if !session_table.contains_key(&cookie_data.id) {
                 session_table.insert(cookie_data.id.clone(), cookie_data.user_name.clone());
             }
 
