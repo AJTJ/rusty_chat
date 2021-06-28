@@ -8,8 +8,7 @@ use actix_web::{
 };
 use actix_web_actors::ws::{self, WebsocketContext};
 use argon2::{self, Config};
-use chrono;
-use chrono::prelude::*;
+use chrono::{prelude::*, Duration};
 use dotenv::dotenv;
 use hotwatch::{Event, Hotwatch};
 use rand::Rng;
@@ -21,16 +20,14 @@ use std::collections::HashMap;
 // use async_trait::async_trait;
 use std::fmt;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
-use time::Duration as TimeDuration;
+use std::time::{Duration as StdDuration, Instant};
+use time::{Duration as TimeDuration, OffsetDateTime};
 
 // CONST DATA
-// Salt for argon2
-const SALT: &[u8] = b"randomsaltyness";
 // SERVER SEND TIME
-const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+const HEARTBEAT_INTERVAL: StdDuration = StdDuration::from_secs(5);
 // DEADLINE
-const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
+const CLIENT_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 // COOKIE NAME
 const COOKIE_NAME: &str = "rusty_cookie";
 
@@ -101,7 +98,10 @@ struct Room {
 }
 
 // SESSION
-type UserName = String;
+struct SessionData {
+    user_name: String,
+    expiry: NaiveDateTime,
+}
 type SessionID = String;
 
 // MESSAGES
@@ -123,12 +123,12 @@ impl fmt::Debug for DebugSession {
 }
 
 // WS ACTOR
-#[derive(Debug)]
+// #[derive(Debug)]
 struct WebSocketActor {
     db_pool: web::Data<SqlitePool>,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
     hb: Instant,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     signed_in_user: String,
     session_id: String,
     socket_id: [u8; 32],
@@ -156,9 +156,9 @@ impl Actor for WebSocketActor {
 
     fn stopped(&mut self, _: &mut Self::Context) {
         //REMOVE USER FROM SESSION
-        let session_table_ref = self.session_table_data.get_ref();
-        let mut session_table = session_table_ref.lock().unwrap();
-        session_table.remove_entry(&self.session_id);
+        // let session_table_ref = self.session_table_data.get_ref();
+        // let mut session_table = session_table_ref.lock().unwrap();
+        // session_table.remove_entry(&self.session_id);
 
         //REMOVE WS FROM ACTIVE SOCKETS
         let all_addresses_ref = self.all_socket_addresses.get_ref();
@@ -212,26 +212,43 @@ async fn get_update_string(
 // WS STREAM HANDLER
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn handle(&mut self, msg: Result<ws::Message, ws::ProtocolError>, ctx: &mut Self::Context) {
-        match msg {
-            Ok(ws::Message::Ping(_)) => {}
-            Ok(ws::Message::Close(_)) => ctx.stop(),
-            Ok(ws::Message::Pong(_)) => {
-                self.hb = Instant::now();
+        //CHECK IF SESSION EXISTS ON EVERY INTERACTION
+        let session_table_ref = self.session_table_data.get_ref();
+        let mut session_table = session_table_ref.lock().unwrap();
+        if let Some(the_sesh_data) = session_table.get_mut(&self.session_id) {
+            // CHECK IF IT HAS EXPIRED
+            let expiry = the_sesh_data.expiry;
+            if expiry < Utc::now().naive_utc() {
+                // EXPIRED SESSION - REMOVE FROM TABLE - CLOSE SOCKET
+                session_table.remove_entry(&self.session_id);
+                return ctx.stop();
             }
-            Ok(ws::Message::Text(json_message)) => message_handler(
-                json_message,
-                self.db_pool.clone(),
-                self.signed_in_user.clone(),
-                self.session_table_data.clone(),
-                self.session_id.clone(),
-                self.all_socket_addresses.clone(),
-            )
-            .into_actor(self)
-            .map(|text, _, inner_ctx| inner_ctx.text(text))
-            .wait(ctx),
-            Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
-            _ => (),
-        };
+            // BOOST EXPIRY IF NOT EXPIRED
+            the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(30);
+
+            match msg {
+                Ok(ws::Message::Ping(_)) => {}
+                Ok(ws::Message::Close(_)) => ctx.stop(),
+                Ok(ws::Message::Pong(_)) => {
+                    self.hb = Instant::now();
+                }
+                Ok(ws::Message::Text(json_message)) => message_handler(
+                    json_message,
+                    self.db_pool.clone(),
+                    self.signed_in_user.clone(),
+                    self.session_table_data.clone(),
+                    self.session_id.clone(),
+                    self.all_socket_addresses.clone(),
+                )
+                .into_actor(self)
+                .map(|text, _, inner_ctx| inner_ctx.text(text))
+                .wait(ctx),
+                Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
+                _ => (),
+            };
+        }
+        // NO SESSION - CLOSE SOCKET
+        ctx.stop()
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
@@ -249,7 +266,7 @@ async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: String,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     session_id: String,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
 ) -> String {
@@ -259,63 +276,48 @@ async fn message_handler(
     let default_room = "lobby".to_string();
     let id = signed_in_user;
 
-    //CHECK IF SESSION IS STILL OPEN
-    let session_table_ref = session_table_data.get_ref();
-    let session_table = session_table_ref.lock().unwrap();
-    if session_table.contains_key(&session_id) {
-        // ADD TO MESSAGES
-        let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
-            .fetch_one(db_pool.get_ref())
-            .await
-            .expect("user_id_record not found");
-
-        let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
-            .fetch_one(db_pool.get_ref())
-            .await
-            .expect("room_id_record not found");
-
-        let message_to_db = MessageToDatabase {
-            user_id: user_id_record.id,
-            room_id: room_id_record.id,
-            message: from_client.message,
-            time: Utc::now().naive_utc(),
-        };
-
-        let current_time = Utc::now().naive_utc();
-
-        sqlx::query!(
-            r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
-            message_to_db.user_id,
-            message_to_db.room_id,
-            message_to_db.message,
-            current_time
-        )
-        .execute(db_pool.get_ref())
+    // ADD TO MESSAGES
+    let user_id_record = sqlx::query!(r#"SELECT id FROM user WHERE name=$1"#, id)
+        .fetch_one(db_pool.get_ref())
         .await
-        .expect("query insert message error");
+        .expect("user_id_record not found");
 
-        let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+    let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
+        .fetch_one(db_pool.get_ref())
+        .await
+        .expect("room_id_record not found");
 
-        let response_struct = ResponseToClient {
-            user_name: id,
-            all_messages: all_messages_json.to_string(),
-            message_to_client: "Awesome".to_string(),
-            is_update: false,
-        };
-        resend_ws(all_socket_addresses).await;
+    let message_to_db = MessageToDatabase {
+        user_id: user_id_record.id,
+        room_id: room_id_record.id,
+        message: from_client.message,
+        time: Utc::now().naive_utc(),
+    };
 
-        json!(response_struct).to_string()
-    } else {
-        let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+    let current_time = Utc::now().naive_utc();
 
-        let response_struct = ResponseToClient {
-            user_name: "".to_string(),
-            all_messages: all_messages_json.to_string(),
-            message_to_client: "You are not signed in".to_string(),
-            is_update: false,
-        };
-        json!(response_struct).to_string()
-    }
+    sqlx::query!(
+        r#"INSERT INTO message (user_id, room_id, message, time) VALUES ($1, $2, $3, $4)"#,
+        message_to_db.user_id,
+        message_to_db.room_id,
+        message_to_db.message,
+        current_time
+    )
+    .execute(db_pool.get_ref())
+    .await
+    .expect("query insert message error");
+
+    let all_messages_json = get_all_messages_json(db_pool.clone()).await;
+
+    let response_struct = ResponseToClient {
+        user_name: id,
+        all_messages: all_messages_json.to_string(),
+        message_to_client: "Awesome".to_string(),
+        is_update: false,
+    };
+    resend_ws(all_socket_addresses).await;
+
+    json!(response_struct).to_string()
 }
 
 // HELPER FUNCTIONS
@@ -356,21 +358,35 @@ async fn index(
     req: HttpRequest,
     stream: web::Payload,
     all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
     let cookie_option = req.cookie(COOKIE_NAME);
 
+    // CHECK IF THERE IS A COOKIE
     match cookie_option {
         Some(cookie) => {
             // CHECK IF SESSION EXISTS
             let session_table_ref = session_table_data.get_ref();
             let mut session_table = session_table_ref.lock().unwrap();
+
             let (_, value) = cookie.name_value();
             let cookie_data: CookieStruct =
                 serde_json::from_str(value).expect("parsing cookie error");
-            // CREATE SESSION IF DOESN'T EXIST
-            if !session_table.contains_key(&cookie_data.id) {
-                session_table.insert(cookie_data.id.clone(), cookie_data.user_name.clone());
+
+            if let Some(the_sesh_data) = session_table.get_mut(&cookie_data.id) {
+                // CHECK IF IT HAS EXPIRED
+                let expiry = the_sesh_data.expiry;
+                if expiry < Utc::now().naive_utc() {
+                    // SESSION HAS ENDED, DELETE FROM TABLE, RETURN RESPONSE
+                    session_table.remove_entry(&cookie_data.id);
+                    return Ok(HttpResponse::Ok().finish());
+                }
+                // BOOST EXPIRY IF NOT EXPIRED
+                the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(30);
+            } else {
+                // NO SESSION, NO SOCKET
+                println!("Session not exist");
+                return Ok(HttpResponse::Ok().finish());
             }
 
             // GENERATE SOCKET ID
@@ -393,6 +409,7 @@ async fn index(
 
             response
         }
+        // NO COOKIE NO SOCKET
         None => Ok(HttpResponse::Ok().finish()),
     }
 }
@@ -408,7 +425,7 @@ struct SignInSignUp {
 async fn signup(
     req_body: String,
     db_pool: web::Data<SqlitePool>,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
 ) -> HttpResponse {
     // I/O DATA
@@ -433,11 +450,15 @@ async fn signup(
         Err(_) => {
             // SAVE THE USER
             let config = Config::default();
-            let password_hash = argon2::hash_encoded(password.as_bytes(), SALT, &config).unwrap();
+            // Salt for argon2
+            let salt_gen = rand::thread_rng().gen::<[u8; 16]>();
+            let salt: &[u8] = &salt_gen[..];
+            let password_hash = argon2::hash_encoded(password.as_bytes(), &salt, &config).unwrap();
             sqlx::query!(
-                r#"INSERT INTO user (name, password) VALUES ($1, $2)"#,
+                r#"INSERT INTO user (name, hash, salt) VALUES ($1, $2, $3)"#,
                 user_name,
-                password_hash
+                password_hash,
+                salt
             )
             .execute(db_pool.get_ref())
             .await
@@ -450,18 +471,18 @@ async fn signup(
 }
 
 fn login_process(
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
     user_name: &String,
 ) -> HttpResponse {
     // CREATE SESSION ID
     let id = rand::thread_rng().gen::<[u8; 16]>();
-    let encoded_value = base64::encode(id);
+    let encoded_session_id = base64::encode(id);
 
     // CHECK IF SIGNED IN ELSEWHERE/ALREADY
     let session_table_ref = session_table_data.get_ref();
     let mut session_table = session_table_ref.lock().unwrap();
-    if session_table.values().any(|x| x == user_name) {
+    if session_table.values().any(|x| &x.user_name == user_name) {
         return HttpResponse::Ok().body(json!(format!("{} is already signed in", user_name)));
     };
 
@@ -477,12 +498,17 @@ fn login_process(
         None => {}
     }
 
+    let current_session_data = SessionData {
+        user_name: user_name.clone(),
+        expiry: Utc::now().naive_utc() + Duration::minutes(30),
+    };
+
     // ADD TO SESSION TABLE
-    session_table.insert(encoded_value.clone(), user_name.clone());
+    session_table.insert(encoded_session_id.clone(), current_session_data);
 
     // CREATE COOKIE
     let cookie_values = CookieStruct {
-        id: encoded_value,
+        id: encoded_session_id,
         user_name: user_name.clone(),
     };
     let cookie = cookie::Cookie::build(COOKIE_NAME, json!(cookie_values).to_string())
@@ -505,7 +531,7 @@ fn login_process(
 async fn login(
     req_body: String,
     db_pool: web::Data<SqlitePool>,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
 ) -> HttpResponse {
     // INCOMING DATA
@@ -520,7 +546,7 @@ async fn login(
     {
         Ok(user_record) => {
             // CHECK PASSWORD
-            let pw_hash = user_record.password;
+            let pw_hash = user_record.hash;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
             match password_match {
                 // CORRECT PW LOGIN
@@ -539,7 +565,7 @@ async fn login(
 
 async fn logout(
     req: HttpRequest,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, UserName>>>,
+    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> HttpResponse {
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
@@ -552,13 +578,15 @@ async fn logout(
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
 
-            // REMOVE COOKIE
-            let mut builder = HttpResponse::Ok();
-            if let Some(ref cookie) = req.cookie(COOKIE_NAME) {
-                println!("there is the cookie to delete: {}", cookie);
-                builder.del_cookie(cookie);
-            }
-            builder.finish()
+            // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
+            let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())
+                .path("/")
+                .secure(false)
+                .expires(OffsetDateTime::unix_epoch())
+                .http_only(true)
+                .finish();
+
+            HttpResponse::Ok().cookie(cookie).finish()
         }
         None => HttpResponse::Ok().finish(),
     }
@@ -584,8 +612,10 @@ async fn main() -> std::io::Result<()> {
     let all_socket_addresses = web::Data::new(Mutex::new(ws_addr));
 
     // SESSION TABLE
-    let session_table: HashMap<SessionID, UserName> = HashMap::new();
+    let session_table: HashMap<SessionID, SessionData> = HashMap::new();
     let session_table_data = web::Data::new(Mutex::new(session_table));
+
+    // CLEAN UP SESSION TABLE EVERY HALF HOUR
 
     // DB POOL
     let db_pool = SqlitePoolOptions::new()
