@@ -1,9 +1,11 @@
 use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
+use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::HttpMessage;
 use actix_web::{
-    cookie, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
+    cookie, http, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
+    Result,
 };
 use actix_web_actors::ws::{self, WebsocketContext};
 use argon2::{self, Config};
@@ -679,3 +681,13 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+// let cors = Cors::default()
+//             .allowed_origin("http://localhost:3000/")
+//             .supports_credentials()
+//             .allowed_methods(vec!["GET", "POST"])
+//             .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+//             .allowed_header(http::header::CONTENT_TYPE)
+//             .max_age(3600);
+
+//             .wrap(cors)
