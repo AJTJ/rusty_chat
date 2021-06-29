@@ -400,6 +400,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "addr2line"
+version = "0.14.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a55f82cfe485775d02112886f4169bde0c5894d75e79ead7eafe7e40a25e45f7"
+dependencies = [
+ "gimli",
+]
+
+[[package]]
 name = "adler"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -473,7 +482,7 @@ checksum = "796540673305a66d127804eef19ad696f1f204b8c1025aaca4958c17eab32877"
 dependencies = [
  "getrandom 0.2.2",
  "once_cell",
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -545,6 +554,20 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_urlencoded",
+]
+
+[[package]]
+name = "backtrace"
+version = "0.3.57"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78ed203b9ba68b242c62b3fb7480f589dd49829be1edb3fe8fc8b4ffda2dcb8d"
+dependencies = [
+ "addr2line",
+ "cfg-if 1.0.0",
+ "libc",
+ "miniz_oxide",
+ "object",
+ "rustc-demangle",
 ]
 
 [[package]]
@@ -728,6 +751,7 @@ dependencies = [
  "cookie",
  "dotenv",
  "hotwatch",
+ "job_scheduler",
  "log",
  "rand 0.8.3",
  "rust-argon2",
@@ -793,7 +817,7 @@ dependencies = [
  "rand 0.8.3",
  "sha2",
  "time 0.2.27",
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -830,6 +854,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81156fece84ab6a9f2afdb109ce3ae577e42b1228441eded99bd77f627953b1a"
 dependencies = [
  "cfg-if 1.0.0",
+]
+
+[[package]]
+name = "cron"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab00a636277f7ea5d8dd92ac7a5099fc9a46e5327bba84d3640b41ae127eada9"
+dependencies = [
+ "chrono",
+ "error-chain",
+ "nom 4.1.1",
 ]
 
 [[package]]
@@ -961,6 +996,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "error-chain"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9435d864e017c3c6afeac1654189b06cdb491cf2ff73dbf0d73b0f292f42ff8"
+dependencies = [
+ "backtrace",
 ]
 
 [[package]]
@@ -1152,7 +1196,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "501466ecc8a30d1d3b7fc9229b122b2ce8ed6e9d9223f1138d4babb253e51817"
 dependencies = [
  "typenum",
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -1186,6 +1230,12 @@ dependencies = [
  "opaque-debug",
  "polyval",
 ]
+
+[[package]]
+name = "gimli"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f6503fe142514ca4799d4c26297c4248239fe8838d827db6bd6065c6ed29a6ce"
 
 [[package]]
 name = "h2"
@@ -1383,6 +1433,17 @@ name = "itoa"
 version = "0.4.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dd25036021b0de88a0aff6b850051563c6516d0bf53f8638938edbb9de732736"
+
+[[package]]
+name = "job_scheduler"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51f368c9c76dde2282714ae32dc274b79c27527a0c06c816f6dda048904d0d7c"
+dependencies = [
+ "chrono",
+ "cron",
+ "uuid",
+]
 
 [[package]]
 name = "js-sys"
@@ -1629,12 +1690,11 @@ dependencies = [
 
 [[package]]
 name = "nom"
-version = "4.2.3"
+version = "4.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2ad2a91a8e869eeb30b9cb3119ae87773a8f4ae617f41b1eb9c154b2905f7bd6"
+checksum = "9c349f68f25f596b9f44cf0e7c69752a5c633b0550c3ff849518bfba0233774a"
 dependencies = [
  "memchr",
- "version_check 0.1.5",
 ]
 
 [[package]]
@@ -1647,7 +1707,7 @@ dependencies = [
  "funty",
  "lexical-core",
  "memchr",
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -1705,6 +1765,12 @@ dependencies = [
  "hermit-abi",
  "libc",
 ]
+
+[[package]]
+name = "object"
+version = "0.23.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a9a7ab5d64814df0fe4a4b5ead45ed6c5f181ee3ff04ba344313a6c80446c5d4"
 
 [[package]]
 name = "once_cell"
@@ -2026,6 +2092,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "rustc-demangle"
+version = "0.1.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dead70b0b5e03e9c814bcb6b01e03e68f7c57a80aa48c72ec92152ab3e818d49"
+
+[[package]]
 name = "rustc_version"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2331,7 +2403,7 @@ version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e113fb6f3de07a243d434a56ec6f186dfd51cb08448239fe7bcae73f87ff28ff"
 dependencies = [
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -2472,7 +2544,7 @@ dependencies = [
  "standback",
  "stdweb",
  "time-macros",
- "version_check 0.9.3",
+ "version_check",
  "winapi 0.3.9",
 ]
 
@@ -2694,7 +2766,7 @@ version = "2.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "50f37be617794602aabbeee0be4f259dc1778fabe05e2d67ee8f79326d5cb4f6"
 dependencies = [
- "version_check 0.9.3",
+ "version_check",
 ]
 
 [[package]]
@@ -2762,6 +2834,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "uuid"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
+dependencies = [
+ "getrandom 0.2.2",
+]
+
+[[package]]
 name = "v_escape"
 version = "0.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2777,7 +2858,7 @@ version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c860ad1273f4eee7006cee05db20c9e60e5d24cba024a32e1094aa8e574f3668"
 dependencies = [
- "nom 4.2.3",
+ "nom 4.1.1",
  "proc-macro2",
  "quote",
  "syn",
@@ -2798,12 +2879,6 @@ name = "vcpkg"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cbdbff6266a24120518560b5dc983096efb98462e51d0d68169895b237be3e5d"
-
-[[package]]
-name = "version_check"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "914b1a6776c4c929a602fafd8bc742e06365d4bcbe48c30f9cca5824f70dc9dd"
 
 [[package]]
 name = "version_check"

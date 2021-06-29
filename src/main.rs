@@ -17,7 +17,6 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::collections::HashMap;
 
-// use async_trait::async_trait;
 use std::fmt;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant};
@@ -89,6 +88,7 @@ struct ResponseToClient {
     all_messages: String,
     message_to_client: String,
     is_update: bool,
+    all_online_users: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -97,11 +97,20 @@ struct Room {
     name: String,
 }
 
-// SESSION
+// SESSION AND AUTH THINGS
+#[derive(Debug)]
 struct SessionData {
     user_name: String,
     expiry: NaiveDateTime,
 }
+
+#[derive(Debug)]
+struct OpenSocketData {
+    addr: Addr<WebSocketActor>,
+    user_name: String,
+}
+
+type SocketId = [u8; 32];
 type SessionID = String;
 
 // MESSAGES
@@ -123,10 +132,10 @@ impl fmt::Debug for DebugSession {
 }
 
 // WS ACTOR
-// #[derive(Debug)]
+#[derive(Debug)]
 struct WebSocketActor {
     db_pool: web::Data<SqlitePool>,
-    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
     hb: Instant,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     signed_in_user: String,
@@ -138,43 +147,55 @@ impl Actor for WebSocketActor {
     type Context = ws::WebsocketContext<Self>;
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        // SAVE SOCKET ADDRESS
-        let all_addresses_ref = self.all_socket_addresses.get_ref();
+        // SAVE OPEN SOCKET
+        let open_sockets_data_ref = self.open_sockets_data.get_ref();
         let addr = ctx.address();
-        all_addresses_ref
+
+        let socket_data = OpenSocketData {
+            addr,
+            user_name: self.signed_in_user.clone(),
+        };
+
+        open_sockets_data_ref
             .lock()
             .unwrap()
-            .insert(self.socket_id, addr);
+            .insert(self.socket_id, socket_data);
+
+        // RESEND TO UPDATE USERS
+        resend_ws(self.open_sockets_data.clone())
+            .into_actor(self)
+            .map(|_, _, _| println!("in resend started"))
+            .wait(ctx);
 
         // START HEARTBEAT
         self.hb(ctx);
     }
 
     fn stopping(&mut self, _: &mut Self::Context) -> Running {
+        //REMOVE WS FROM ACTIVE SOCKETS
+        let open_sockets_data_ref = self.open_sockets_data.get_ref();
+        let mut all_sockets = open_sockets_data_ref.lock().unwrap();
+        all_sockets.remove_entry(&self.socket_id);
+
         Running::Stop
     }
 
-    fn stopped(&mut self, _: &mut Self::Context) {
-        //REMOVE USER FROM SESSION
-        // let session_table_ref = self.session_table_data.get_ref();
-        // let mut session_table = session_table_ref.lock().unwrap();
-        // session_table.remove_entry(&self.session_id);
-
-        //REMOVE WS FROM ACTIVE SOCKETS
-        let all_addresses_ref = self.all_socket_addresses.get_ref();
-        let mut all_sockets = all_addresses_ref.lock().unwrap();
-        all_sockets.remove_entry(&self.socket_id);
-    }
+    fn stopped(&mut self, _: &mut Self::Context) {}
 }
 
 // Handler for Resend Message
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
     fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        get_update_string(self.signed_in_user.to_string(), false, self.db_pool.clone())
-            .into_actor(self)
-            .map(|text, _, inner_ctx| inner_ctx.text(text))
-            .wait(ctx);
+        get_update_string(
+            self.signed_in_user.to_string(),
+            false,
+            self.db_pool.clone(),
+            self.open_sockets_data.clone(),
+        )
+        .into_actor(self)
+        .map(|text, _, inner_ctx| inner_ctx.text(text))
+        .wait(ctx);
         Ok(true)
     }
 }
@@ -198,13 +219,24 @@ async fn get_update_string(
     signed_in_user: String,
     is_update: bool,
     db_pool: web::Data<SqlitePool>,
+    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> String {
+    // GET ONLNIE USERS
+    let open_sockets_data_ref = open_sockets_data.get_ref();
+    let all_socket_users = open_sockets_data_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, add)| add.user_name.clone())
+        .collect::<Vec<_>>();
+
     let all_messages = get_all_messages_json(db_pool).await;
     let response = ResponseToClient {
         user_name: signed_in_user,
         all_messages: all_messages.to_string(),
         message_to_client: "Welcome!".to_string(),
         is_update,
+        all_online_users: all_socket_users,
     };
     json!(response).to_string()
 }
@@ -224,21 +256,29 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 return ctx.stop();
             }
             // BOOST EXPIRY IF NOT EXPIRED
-            the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(30);
+            the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(5);
 
             match msg {
                 Ok(ws::Message::Ping(_)) => {}
                 Ok(ws::Message::Close(_)) => ctx.stop(),
                 Ok(ws::Message::Pong(_)) => {
                     self.hb = Instant::now();
+                    // UPDATE ON HEARTBEAT
+                    get_update_string(
+                        self.signed_in_user.to_string(),
+                        false,
+                        self.db_pool.clone(),
+                        self.open_sockets_data.clone(),
+                    )
+                    .into_actor(self)
+                    .map(|text, _, inner_ctx| inner_ctx.text(text))
+                    .wait(ctx);
                 }
                 Ok(ws::Message::Text(json_message)) => message_handler(
                     json_message,
                     self.db_pool.clone(),
                     self.signed_in_user.clone(),
-                    self.session_table_data.clone(),
-                    self.session_id.clone(),
-                    self.all_socket_addresses.clone(),
+                    self.open_sockets_data.clone(),
                 )
                 .into_actor(self)
                 .map(|text, _, inner_ctx| inner_ctx.text(text))
@@ -246,16 +286,22 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 Ok(ws::Message::Binary(_)) => println!("Unexpected binary"),
                 _ => (),
             };
+            return;
         }
         // NO SESSION - CLOSE SOCKET
         ctx.stop()
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        get_update_string(self.signed_in_user.to_string(), false, self.db_pool.clone())
-            .into_actor(self)
-            .map(|text, _, inner_ctx| inner_ctx.text(text))
-            .wait(ctx);
+        get_update_string(
+            self.signed_in_user.to_string(),
+            false,
+            self.db_pool.clone(),
+            self.open_sockets_data.clone(),
+        )
+        .into_actor(self)
+        .map(|text, _, inner_ctx| inner_ctx.text(text))
+        .wait(ctx);
     }
 
     fn finished(&mut self, _: &mut Self::Context) {}
@@ -266,9 +312,7 @@ async fn message_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: String,
-    session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
-    session_id: String,
-    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> String {
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
@@ -309,13 +353,22 @@ async fn message_handler(
 
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
+    let open_sockets_data_ref = open_sockets_data.get_ref();
+    let all_socket_users = open_sockets_data_ref
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, add)| add.user_name.clone())
+        .collect::<Vec<_>>();
+
     let response_struct = ResponseToClient {
         user_name: id,
         all_messages: all_messages_json.to_string(),
         message_to_client: "Awesome".to_string(),
         is_update: false,
+        all_online_users: all_socket_users,
     };
-    resend_ws(all_socket_addresses).await;
+    resend_ws(open_sockets_data).await;
 
     json!(response_struct).to_string()
 }
@@ -331,16 +384,16 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     all_messages_json
 }
 
-async fn resend_ws(
-    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
-) {
-    let all_addresses_ref = all_socket_addresses.get_ref();
-    let all_sockets = all_addresses_ref
+async fn resend_ws(open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>) {
+    let open_sockets_data_ref = open_sockets_data.get_ref();
+    let all_sockets = open_sockets_data_ref
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, add)| add.try_send(Resend))
+        .map(|(_, add)| add.addr.try_send(Resend))
         .collect::<Vec<_>>();
+
+    println!("all socks IN RESEND: {:#?}", all_sockets);
 
     for sock in all_sockets {
         // HANGS ON THIS AWAIT
@@ -357,14 +410,16 @@ async fn index(
     db_pool: web::Data<SqlitePool>,
     req: HttpRequest,
     stream: web::Payload,
-    all_socket_addresses: web::Data<Mutex<HashMap<[u8; 32], Addr<WebSocketActor>>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
+    println!("index hit");
     let cookie_option = req.cookie(COOKIE_NAME);
 
     // CHECK IF THERE IS A COOKIE
     match cookie_option {
         Some(cookie) => {
+            println!("is cookie");
             // CHECK IF SESSION EXISTS
             let session_table_ref = session_table_data.get_ref();
             let mut session_table = session_table_ref.lock().unwrap();
@@ -382,7 +437,7 @@ async fn index(
                     return Ok(HttpResponse::Ok().finish());
                 }
                 // BOOST EXPIRY IF NOT EXPIRED
-                the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(30);
+                the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(5);
             } else {
                 // NO SESSION, NO SOCKET
                 println!("Session not exist");
@@ -396,7 +451,7 @@ async fn index(
             let response = ws::start(
                 WebSocketActor {
                     db_pool,
-                    all_socket_addresses: all_socket_addresses.clone(),
+                    open_sockets_data: open_sockets_data.clone(),
                     hb: Instant::now(),
                     session_table_data: session_table_data.clone(),
                     signed_in_user: cookie_data.user_name.clone(),
@@ -475,18 +530,23 @@ fn login_process(
     req: HttpRequest,
     user_name: &String,
 ) -> HttpResponse {
+    let session_table_ref = session_table_data.get_ref();
+    let mut session_table = session_table_ref.lock().unwrap();
+
     // CREATE SESSION ID
     let id = rand::thread_rng().gen::<[u8; 16]>();
     let encoded_session_id = base64::encode(id);
 
+    // BASIC CLEANUP
+    session_table.retain(|_, session| session.expiry > Utc::now().naive_utc());
+
     // CHECK IF SIGNED IN ELSEWHERE/ALREADY
-    let session_table_ref = session_table_data.get_ref();
-    let mut session_table = session_table_ref.lock().unwrap();
+
     if session_table.values().any(|x| &x.user_name == user_name) {
         return HttpResponse::Ok().body(json!(format!("{} is already signed in", user_name)));
     };
 
-    // REMOVE CURRENT COOKIE FROM SESSION
+    // IF CURRENT COOKIE - REMOVE FROM SESSION
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
         Some(cookie) => {
@@ -500,13 +560,13 @@ fn login_process(
 
     let current_session_data = SessionData {
         user_name: user_name.clone(),
-        expiry: Utc::now().naive_utc() + Duration::minutes(30),
+        expiry: Utc::now().naive_utc() + Duration::minutes(5),
     };
 
     // ADD TO SESSION TABLE
     session_table.insert(encoded_session_id.clone(), current_session_data);
 
-    // CREATE COOKIE
+    // CREATE NEW COOKIE
     let cookie_values = CookieStruct {
         id: encoded_session_id,
         user_name: user_name.clone(),
@@ -518,7 +578,7 @@ fn login_process(
         .http_only(true)
         .finish();
 
-    // FINISH WITH NEW COOKIE
+    // ADD/REWRITE COOKIE
     HttpResponse::Ok()
         .cookie(cookie)
         .body(json!(format!("Welcome {}", user_name)))
@@ -566,6 +626,7 @@ async fn login(
 async fn logout(
     req: HttpRequest,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
+    // open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> HttpResponse {
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
@@ -577,6 +638,8 @@ async fn logout(
             let cookie_data: CookieStruct =
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
+
+            // TODO REMOVE SOCKET FROM ACTIVE SOCKETS
 
             // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
             let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())
@@ -608,14 +671,12 @@ async fn main() -> std::io::Result<()> {
         .expect("failed to watch file!");
 
     // OPEN SOCKETS
-    let ws_addr: HashMap<[u8; 32], Addr<WebSocketActor>> = HashMap::new();
-    let all_socket_addresses = web::Data::new(Mutex::new(ws_addr));
+    let ws_addr: HashMap<SocketId, OpenSocketData> = HashMap::new();
+    let open_sockets_data = web::Data::new(Mutex::new(ws_addr));
 
     // SESSION TABLE
     let session_table: HashMap<SessionID, SessionData> = HashMap::new();
     let session_table_data = web::Data::new(Mutex::new(session_table));
-
-    // CLEAN UP SESSION TABLE EVERY HALF HOUR
 
     // DB POOL
     let db_pool = SqlitePoolOptions::new()
@@ -629,8 +690,9 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             // DATA
+            // .app_data(clean_up_data.clone())
             .app_data(shared_db_pool.clone())
-            .app_data(all_socket_addresses.clone())
+            .app_data(open_sockets_data.clone())
             .app_data(session_table_data.clone())
             // ENDPOINTS
             .route("/signup/", web::post().to(signup))
