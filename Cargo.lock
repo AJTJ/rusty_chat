@@ -63,20 +63,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "actix-cors"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "36b133d8026a9f209a9aeeeacd028e7451bcca975f592881b305d37983f303d7"
-dependencies = [
- "actix-web",
- "derive_more",
- "futures-util",
- "log",
- "once_cell",
- "tinyvec",
-]
-
-[[package]]
 name = "actix-files"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -140,20 +126,6 @@ dependencies = [
  "serde_urlencoded",
  "sha-1",
  "slab",
- "time 0.2.27",
-]
-
-[[package]]
-name = "actix-identity"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3263fe74cf505c6f9e18209c89fbdba5569cfd3905a7e907b42aa1c85c18fae5"
-dependencies = [
- "actix-service",
- "actix-web",
- "futures-util",
- "serde",
- "serde_json",
  "time 0.2.27",
 ]
 
@@ -733,34 +705,6 @@ name = "cfg-if"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "baf1de4339761588bc0619e3cbc0120ee582ebb74b53b4efbf79117bd2da40fd"
-
-[[package]]
-name = "chat"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-cors",
- "actix-files",
- "actix-identity",
- "actix-rt 2.2.0",
- "actix-session",
- "actix-web",
- "actix-web-actors",
- "base64 0.13.0",
- "chrono",
- "cookie",
- "dotenv",
- "hotwatch",
- "job_scheduler",
- "log",
- "rand 0.8.3",
- "rust-argon2",
- "serde",
- "serde_json",
- "sqlx",
- "time 0.2.27",
- "tokio 1.6.0",
-]
 
 [[package]]
 name = "chrono"
@@ -2117,6 +2061,32 @@ dependencies = [
  "ring",
  "sct",
  "webpki",
+]
+
+[[package]]
+name = "rusty_chat"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-files",
+ "actix-rt 2.2.0",
+ "actix-session",
+ "actix-web",
+ "actix-web-actors",
+ "base64 0.13.0",
+ "chrono",
+ "cookie",
+ "dotenv",
+ "hotwatch",
+ "job_scheduler",
+ "log",
+ "rand 0.8.3",
+ "rust-argon2",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "time 0.2.27",
+ "tokio 1.6.0",
 ]
 
 [[package]]

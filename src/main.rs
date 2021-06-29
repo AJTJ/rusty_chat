@@ -1,16 +1,14 @@
 use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
-use actix_cors::Cors;
 use actix_files as fs;
 use actix_web::HttpMessage;
 use actix_web::{
-    cookie, http, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer,
-    Result,
+    cookie, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
 };
 use actix_web_actors::ws::{self, WebsocketContext};
 use argon2::{self, Config};
 use chrono::{prelude::*, Duration};
-use dotenv::dotenv;
+use dotenv::{dotenv, var};
 use hotwatch::{Event, Hotwatch};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -21,6 +19,9 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant};
 use time::{Duration as TimeDuration, OffsetDateTime};
+
+// UNUSED
+// use actix_cors::Cors;
 
 // CONST DATA
 // SERVER SEND TIME
@@ -365,7 +366,7 @@ async fn message_handler(
 // HELPER FUNCTIONS
 async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
-        sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC")
+        sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC LIMIT 50")
             .fetch_all(db_pool.get_ref())
             .await
             .expect("all messages failure");
@@ -616,7 +617,7 @@ async fn logout(
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
 
-            // TODO REMOVE SOCKET FROM ACTIVE SOCKETS
+            // TODO REMOVE SOCKET FROM ACTIVE SOCKETS TO UPDATE OTHER USERS
 
             // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
             let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())
@@ -636,16 +637,23 @@ async fn logout(
 async fn main() -> std::io::Result<()> {
     // ENV
     dotenv().ok();
+    let dev_key = "DEVELOPMENT";
+    let env_dev = var(dev_key);
 
-    // HOT RELOADING
-    let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
-    hotwatch
-        .watch("./chat_socket/build", |event: Event| {
-            if let Event::Write(_path) = event {
-                println!("Changes in front-end");
-            }
-        })
-        .expect("failed to watch file!");
+    match env_dev {
+        Ok(_) => {
+            // HOT RELOADING
+            let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
+            hotwatch
+                .watch("./chat_socket/build", |event: Event| {
+                    if let Event::Write(_path) = event {
+                        println!("Changes in front-end");
+                    }
+                })
+                .expect("failed to watch file!");
+        }
+        Err(_) => {}
+    }
 
     // OPEN SOCKETS DATA
     let socket_data_hashmap: HashMap<SocketId, OpenSocketData> = HashMap::new();
@@ -664,16 +672,7 @@ async fn main() -> std::io::Result<()> {
     let shared_db_pool = web::Data::new(db_pool);
 
     HttpServer::new(move || {
-        let cors = Cors::default()
-            .allowed_origin("http://localhost:3000/")
-            .supports_credentials()
-            .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
-            .allowed_methods(vec!["GET", "POST"])
-            .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
-            // .allowed_header(http::header::CONTENT_TYPE)
-            .max_age(3600);
         App::new()
-            .wrap(cors)
             .wrap(Logger::default())
             // DATA
             .app_data(shared_db_pool.clone())
@@ -690,3 +689,14 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
+
+// let cors = Cors::default()
+//             .allowed_origin("http://localhost:3000/")
+//             .supports_credentials()
+//             .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
+//             .allowed_methods(vec!["GET", "POST"])
+//             .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+//             // .allowed_header(http::header::CONTENT_TYPE)
+//             .max_age(3600);
+
+//             .wrap(cors)
