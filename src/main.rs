@@ -114,22 +114,11 @@ type SocketId = [u8; 32];
 type SessionID = String;
 
 // MESSAGES
-/// Msg to update all the chat info
+
+// UPDATE ALL SOCKETS
 #[derive(Message)]
 #[rtype(result = "Result<bool, std::io::Error>")]
 struct Resend;
-
-/// Just a Ping
-#[derive(Message)]
-#[rtype(result = "Result<bool, std::io::Error>")]
-struct Ping;
-
-struct DebugSession(pub Session);
-impl fmt::Debug for DebugSession {
-    fn fmt(&self, _: &mut fmt::Formatter<'_>) -> fmt::Result {
-        Ok(())
-    }
-}
 
 // WS ACTOR
 #[derive(Debug)]
@@ -161,7 +150,7 @@ impl Actor for WebSocketActor {
             .unwrap()
             .insert(self.socket_id, socket_data);
 
-        // RESEND TO UPDATE USERS
+        // UPDATE OTHER SOCKETS WITH NEW SOCKET
         resend_ws(self.open_sockets_data.clone())
             .into_actor(self)
             .map(|_, _, _| println!("in resend started"))
@@ -393,8 +382,6 @@ async fn resend_ws(open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSock
         .map(|(_, add)| add.addr.try_send(Resend))
         .collect::<Vec<_>>();
 
-    println!("all socks IN RESEND: {:#?}", all_sockets);
-
     for sock in all_sockets {
         // HANGS ON THIS AWAIT
         let result = sock;
@@ -413,7 +400,6 @@ async fn index(
     open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
-    println!("index hit");
     let cookie_option = req.cookie(COOKIE_NAME);
 
     // CHECK IF THERE IS A COOKIE
@@ -436,11 +422,10 @@ async fn index(
                     session_table.remove_entry(&cookie_data.id);
                     return Ok(HttpResponse::Ok().finish());
                 }
-                // BOOST EXPIRY IF NOT EXPIRED
+                // BOOST EXPIRY DATE IF NOT EXPIRED
                 the_sesh_data.expiry = Utc::now().naive_utc() + Duration::minutes(5);
             } else {
                 // NO SESSION, NO SOCKET
-                println!("Session not exist");
                 return Ok(HttpResponse::Ok().finish());
             }
 
@@ -503,9 +488,8 @@ async fn signup(
         Ok(_) => HttpResponse::Ok().body(json!(format!("User already exists"))),
         // NO USER -> SIGNUP & SIGNIN
         Err(_) => {
-            // SAVE THE USER
+            // SAVE THE USER_NAME, PW, SALT
             let config = Config::default();
-            // Salt for argon2
             let salt_gen = rand::thread_rng().gen::<[u8; 16]>();
             let salt: &[u8] = &salt_gen[..];
             let password_hash = argon2::hash_encoded(password.as_bytes(), &salt, &config).unwrap();
@@ -541,12 +525,11 @@ fn login_process(
     session_table.retain(|_, session| session.expiry > Utc::now().naive_utc());
 
     // CHECK IF SIGNED IN ELSEWHERE/ALREADY
-
     if session_table.values().any(|x| &x.user_name == user_name) {
         return HttpResponse::Ok().body(json!(format!("{} is already signed in", user_name)));
     };
 
-    // IF CURRENT COOKIE - REMOVE FROM SESSION
+    // IF A COOKIE IS PRESENT - REMOVE IT FROM SESSION
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
         Some(cookie) => {
@@ -558,12 +541,11 @@ fn login_process(
         None => {}
     }
 
+    // ADD TO SESSION TABLE
     let current_session_data = SessionData {
         user_name: user_name.clone(),
         expiry: Utc::now().naive_utc() + Duration::minutes(5),
     };
-
-    // ADD TO SESSION TABLE
     session_table.insert(encoded_session_id.clone(), current_session_data);
 
     // CREATE NEW COOKIE
@@ -578,16 +560,13 @@ fn login_process(
         .http_only(true)
         .finish();
 
-    // ADD/REWRITE COOKIE
+    // RETURN AND ADD/REWRITE COOKIE
     HttpResponse::Ok()
         .cookie(cookie)
         .body(json!(format!("Welcome {}", user_name)))
 }
 
-/**
-    LOGIN
-    Graceful error if receiving wrong data from frontend.
-*/
+// LOGIN
 async fn login(
     req_body: String,
     db_pool: web::Data<SqlitePool>,
@@ -599,7 +578,7 @@ async fn login(
     let user_name = &body_json.user_name;
     let password = &body_json.password;
 
-    // Check for user name
+    // CHECK USER NAME
     match sqlx::query!(r#"SELECT * FROM user WHERE name=$1"#, user_name)
         .fetch_one(db_pool.get_ref())
         .await
@@ -609,7 +588,7 @@ async fn login(
             let pw_hash = user_record.hash;
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
             match password_match {
-                // CORRECT PW LOGIN
+                // CORRECT PW AND LOGIN
                 true => login_process(session_table_data, req, user_name),
                 // WRONG PASSWORD
                 false => HttpResponse::Ok().body(json!(format!(
@@ -626,7 +605,6 @@ async fn login(
 async fn logout(
     req: HttpRequest,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
-    // open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> HttpResponse {
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
@@ -670,13 +648,13 @@ async fn main() -> std::io::Result<()> {
         })
         .expect("failed to watch file!");
 
-    // OPEN SOCKETS
-    let ws_addr: HashMap<SocketId, OpenSocketData> = HashMap::new();
-    let open_sockets_data = web::Data::new(Mutex::new(ws_addr));
+    // OPEN SOCKETS DATA
+    let socket_data_hashmap: HashMap<SocketId, OpenSocketData> = HashMap::new();
+    let open_sockets_data = web::Data::new(Mutex::new(socket_data_hashmap));
 
     // SESSION TABLE
-    let session_table: HashMap<SessionID, SessionData> = HashMap::new();
-    let session_table_data = web::Data::new(Mutex::new(session_table));
+    let session_table_hashmap: HashMap<SessionID, SessionData> = HashMap::new();
+    let session_table_data = web::Data::new(Mutex::new(session_table_hashmap));
 
     // DB POOL
     let db_pool = SqlitePoolOptions::new()
@@ -690,7 +668,6 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             // DATA
-            // .app_data(clean_up_data.clone())
             .app_data(shared_db_pool.clone())
             .app_data(open_sockets_data.clone())
             .app_data(session_table_data.clone())
