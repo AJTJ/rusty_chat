@@ -664,7 +664,16 @@ async fn main() -> std::io::Result<()> {
     let shared_db_pool = web::Data::new(db_pool);
 
     HttpServer::new(move || {
+        let cors = Cors::default()
+            .allowed_origin("http://localhost:3000/")
+            .supports_credentials()
+            .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
+            .allowed_methods(vec!["GET", "POST"])
+            .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+            // .allowed_header(http::header::CONTENT_TYPE)
+            .max_age(3600);
         App::new()
+            .wrap(cors)
             .wrap(Logger::default())
             // DATA
             .app_data(shared_db_pool.clone())
@@ -681,13 +690,3 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-
-// let cors = Cors::default()
-//             .allowed_origin("http://localhost:3000/")
-//             .supports_credentials()
-//             .allowed_methods(vec!["GET", "POST"])
-//             .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
-//             .allowed_header(http::header::CONTENT_TYPE)
-//             .max_age(3600);
-
-//             .wrap(cors)
