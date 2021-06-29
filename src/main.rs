@@ -1,7 +1,6 @@
 use actix::prelude::*;
 use actix::{Actor, ActorFuture, ContextFutureSpawner, Running, StreamHandler, WrapFuture};
 use actix_files as fs;
-use actix_session::Session;
 use actix_web::HttpMessage;
 use actix_web::{
     cookie, middleware::Logger, web, App, Error, HttpRequest, HttpResponse, HttpServer, Result,
@@ -17,7 +16,6 @@ use serde_json::{json, Value};
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
 use std::collections::HashMap;
 
-use std::fmt;
 use std::sync::Mutex;
 use std::time::{Duration as StdDuration, Instant};
 use time::{Duration as TimeDuration, OffsetDateTime};
@@ -150,10 +148,10 @@ impl Actor for WebSocketActor {
             .unwrap()
             .insert(self.socket_id, socket_data);
 
-        // UPDATE OTHER SOCKETS WITH NEW SOCKET
+        // UPDATE OTHER SOCKETS WITH NEW SOCKET PRESENT
         resend_ws(self.open_sockets_data.clone())
             .into_actor(self)
-            .map(|_, _, _| println!("in resend started"))
+            .map(|_, _, _| {})
             .wait(ctx);
 
         // START HEARTBEAT
@@ -405,7 +403,6 @@ async fn index(
     // CHECK IF THERE IS A COOKIE
     match cookie_option {
         Some(cookie) => {
-            println!("is cookie");
             // CHECK IF SESSION EXISTS
             let session_table_ref = session_table_data.get_ref();
             let mut session_table = session_table_ref.lock().unwrap();
