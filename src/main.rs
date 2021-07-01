@@ -224,7 +224,7 @@ async fn get_update_string(
     let response = ResponseToClient {
         user_name: signed_in_user,
         all_messages: all_messages.to_string(),
-        message_to_client: "Welcome!".to_string(),
+        message_to_client: "".to_string(),
         is_update,
         all_online_users: all_socket_users,
     };
@@ -354,7 +354,7 @@ async fn message_handler(
     let response_struct = ResponseToClient {
         user_name: id,
         all_messages: all_messages_json.to_string(),
-        message_to_client: "Awesome".to_string(),
+        message_to_client: "".to_string(),
         is_update: false,
         all_online_users: all_socket_users,
     };
@@ -561,9 +561,7 @@ fn login_process(
         .finish();
 
     // RETURN AND ADD/REWRITE COOKIE
-    HttpResponse::Ok()
-        .cookie(cookie)
-        .body(json!(format!("Welcome {}", user_name)))
+    HttpResponse::Ok().cookie(cookie).finish()
 }
 
 // LOGIN
@@ -598,7 +596,7 @@ async fn login(
             }
         }
         // USER NOT IN DB
-        Err(_) => HttpResponse::Ok().body(json!(format!("User name is not registered."))),
+        Err(_) => HttpResponse::Ok().body(json!(format!("User does not exist, please register."))),
     }
 }
 
@@ -635,13 +633,19 @@ async fn logout(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    println!("Server running");
     // ENV
     dotenv().ok();
     let dev_key = "DEVELOPMENT";
     let env_dev = var(dev_key);
 
+    let db_key = "DATABASE_URL";
+    let env_db = var(db_key).unwrap();
+    let env_db_slice: &str = &*env_db;
+
     match env_dev {
         Ok(_) => {
+            println!("in dev: hot reloading activated");
             // HOT RELOADING
             let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
             hotwatch
@@ -652,7 +656,9 @@ async fn main() -> std::io::Result<()> {
                 })
                 .expect("failed to watch file!");
         }
-        Err(_) => {}
+        Err(_) => {
+            println!("not in dev")
+        }
     }
 
     // OPEN SOCKETS DATA
@@ -666,7 +672,7 @@ async fn main() -> std::io::Result<()> {
     // DB POOL
     let db_pool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect("sqlite://./chat.db")
+        .connect(env_db_slice)
         .await
         .expect("pool FAILURE");
     let shared_db_pool = web::Data::new(db_pool);
