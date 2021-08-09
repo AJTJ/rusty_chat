@@ -1,2 +1,3 @@
-/chat_socket
+# /chat_socket
 .env
+/chat_socket/.env
