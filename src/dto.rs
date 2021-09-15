@@ -1,8 +1,14 @@
 // UTILS
 use chrono::prelude::*;
 
+// ACTIX
+use actix::prelude::*;
+
 // SERDE
 use serde::{Deserialize, Serialize};
+
+// MODS
+use crate::socket_actor::WebSocketActor;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DatabaseMessage {
@@ -39,4 +45,23 @@ pub struct ResponseToClient {
     pub message_to_client: String,
     pub is_update: bool,
     pub all_online_users: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct OpenSocketData {
+    pub addr: Addr<WebSocketActor>,
+    pub user_name: String,
+}
+
+#[derive(Debug)]
+pub struct SessionData {
+    pub user_name: String,
+    pub expiry: NaiveDateTime,
+}
+
+// SHARED COOKIE THINGS
+#[derive(Serialize, Deserialize, Debug)]
+pub struct CookieStruct {
+    pub id: String,
+    pub user_name: String,
 }

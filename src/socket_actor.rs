@@ -18,16 +18,20 @@ use sqlx::SqlitePool;
 // STD
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::Duration as StdDuration;
 use std::time::Instant;
 
-// MODS
-use crate::common::{
-    CookieStruct, OpenSocketData, SessionData, SessionID, SocketId, CLIENT_TIMEOUT, COOKIE_NAME,
-    HEARTBEAT_INTERVAL,
-};
+// SERVER SEND TIME
+pub const HEARTBEAT_INTERVAL: StdDuration = StdDuration::from_secs(5);
+// DEADLINE
+pub const CLIENT_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
-use crate::socket_actor_structs::{
-    DatabaseMessage, FromClient, MessageToDatabase, ResponseToClient,
+// MODS
+use crate::common::{SessionID, SocketId, COOKIE_NAME};
+
+use crate::dto::{
+    CookieStruct, DatabaseMessage, FromClient, MessageToDatabase, OpenSocketData, ResponseToClient,
+    SessionData,
 };
 
 //
@@ -94,6 +98,7 @@ struct Resend;
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
     fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+        println!("got resend msg: {}", self.signed_in_user);
         get_update_string(
             self.signed_in_user.to_string(),
             false,
@@ -217,7 +222,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                     .map(|text, _, inner_ctx| inner_ctx.text(text))
                     .wait(ctx);
                 }
-                Ok(ws::Message::Text(json_message)) => message_handler(
+                Ok(ws::Message::Text(json_message)) => chat_handler(
                     json_message,
                     self.db_pool.clone(),
                     self.signed_in_user.clone(),
@@ -250,8 +255,8 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     fn finished(&mut self, _: &mut Self::Context) {}
 }
 
-// WEBSOCKET MESSAGE HANDLING
-async fn message_handler(
+// WEBSOCKET CHAT HANDLING
+async fn chat_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: String,
@@ -335,7 +340,7 @@ async fn get_update_string(
     db_pool: web::Data<SqlitePool>,
     open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> String {
-    // GET ONLNIE USERS
+    // GET ONLINE USERS
     let open_sockets_data_ref = open_sockets_data.get_ref();
     let all_socket_users = open_sockets_data_ref
         .lock()
@@ -362,14 +367,16 @@ async fn resend_ws(open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSock
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, add)| add.addr.try_send(Resend))
+        .map(|(_, sock_data)| sock_data.addr.try_send(Resend))
+        // .map(|(_, sock_data)| sock_data.addr.send(Resend))
         .collect::<Vec<_>>();
 
     for sock in all_sockets {
         // HANGS ON THIS AWAIT
-        let result = sock;
-        match result {
-            Ok(_) => {}
+        match sock {
+            Ok(_) => {
+                println!("it sended")
+            }
             Err(err) => println!("Got resend error: {:?}", err),
         }
     }

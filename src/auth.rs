@@ -11,7 +11,8 @@ use std::sync::Mutex;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 // MODS
-use crate::common::{CookieStruct, SessionData, SessionID, COOKIE_NAME};
+use crate::common::{SessionID, SocketId, COOKIE_NAME};
+use crate::dto::{CookieStruct, OpenSocketData, SessionData};
 
 // AUTH HANDLING
 #[derive(Serialize, Deserialize, Debug)]
@@ -162,6 +163,7 @@ pub async fn login(
 pub async fn logout(
     req: HttpRequest,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
+    // open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
 ) -> HttpResponse {
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
@@ -174,7 +176,8 @@ pub async fn logout(
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
 
-            // TODO REMOVE SOCKET FROM ACTIVE SOCKETS TO UPDATE OTHER USERS
+            // TODO REMOVE SOCKET FROM OPEN SOCKETS TO UPDATE OTHER USERS
+            // let open_sockets_data_ref = open_sockets_data.get_ref();
 
             // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
             let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())

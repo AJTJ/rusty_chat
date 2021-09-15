@@ -17,7 +17,8 @@ use std::sync::Mutex;
 
 // MODS
 use rusty_chat::auth::{login, logout, signup};
-use rusty_chat::common::{OpenSocketData, SessionData, SessionID, SocketId};
+use rusty_chat::common::{SessionID, SocketId};
+use rusty_chat::dto::{OpenSocketData, SessionData};
 use rusty_chat::socket_actor::ws_index;
 
 // UNUSED
@@ -34,6 +35,11 @@ async fn main() -> std::io::Result<()> {
     let db_key = "DATABASE_URL";
     let env_db = var(db_key).unwrap();
     let env_db_slice: &str = &*env_db;
+
+    let local_url = "LOCAL_URL";
+    let env_local_url = var(local_url).unwrap();
+    let env_local_url_slice: &str = &*env_local_url;
+    println!("Serving at: {}", env_local_url_slice);
 
     match env_dev {
         Ok(_) => {
@@ -83,7 +89,7 @@ async fn main() -> std::io::Result<()> {
             .route("/ws/", web::get().to(ws_index))
             .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
     })
-    .bind("127.0.0.1:8081")?
+    .bind(env_local_url_slice)?
     .run()
     .await
 }
