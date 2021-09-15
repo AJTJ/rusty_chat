@@ -17,6 +17,7 @@ use sqlx::SqlitePool;
 
 // STD
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::sync::Mutex;
 use std::time::Duration as StdDuration;
 use std::time::Instant;
@@ -27,11 +28,10 @@ pub const HEARTBEAT_INTERVAL: StdDuration = StdDuration::from_secs(5);
 pub const CLIENT_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 
 // MODS
-use crate::common::{SessionID, SocketId, COOKIE_NAME};
 
 use crate::dto::{
     CookieStruct, DatabaseMessage, FromClient, MessageToDatabase, OpenSocketData, ResponseToClient,
-    SessionData,
+    SessionData, SessionID, UniversalIdType, COOKIE_NAME,
 };
 
 //
@@ -40,12 +40,12 @@ use crate::dto::{
 #[derive(Debug)]
 pub struct WebSocketActor {
     db_pool: web::Data<SqlitePool>,
-    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
     hb: Instant,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     signed_in_user: String,
     session_id: String,
-    socket_id: [u8; 32],
+    socket_id: UniversalIdType,
 }
 
 // ACTOR IMPL
@@ -133,7 +133,7 @@ pub async fn ws_index(
     db_pool: web::Data<SqlitePool>,
     req: HttpRequest,
     stream: web::Payload,
-    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
     let cookie_option = req.cookie(COOKIE_NAME);
@@ -164,8 +164,9 @@ pub async fn ws_index(
                 return Ok(HttpResponse::Ok().finish());
             }
 
-            // GENERATE SOCKET ID
-            let socket_id = rand::thread_rng().gen::<[u8; 32]>();
+            // GET ID
+            let decoded_id_vec = base64::decode(&cookie_data.id).unwrap();
+            let decoded_id: UniversalIdType = decoded_id_vec.as_slice().try_into().unwrap();
 
             // OPEN SOCKET
             let response = ws::start(
@@ -176,7 +177,7 @@ pub async fn ws_index(
                     session_table_data: session_table_data.clone(),
                     signed_in_user: cookie_data.user_name.clone(),
                     session_id: cookie_data.id.clone(),
-                    socket_id,
+                    socket_id: decoded_id,
                 },
                 &req,
                 stream,
@@ -260,7 +261,7 @@ async fn chat_handler(
     received_client_message: String,
     db_pool: web::Data<SqlitePool>,
     signed_in_user: String,
-    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) -> String {
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
@@ -338,7 +339,7 @@ async fn get_update_string(
     signed_in_user: String,
     is_update: bool,
     db_pool: web::Data<SqlitePool>,
-    open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) -> String {
     // GET ONLINE USERS
     let open_sockets_data_ref = open_sockets_data.get_ref();
@@ -361,18 +362,18 @@ async fn get_update_string(
 }
 
 // GET NEW MESSAGES ON MSG SENT
-async fn resend_ws(open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>) {
+pub async fn resend_ws(
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
+) {
     let open_sockets_data_ref = open_sockets_data.get_ref();
     let all_sockets = open_sockets_data_ref
         .lock()
         .unwrap()
         .iter()
         .map(|(_, sock_data)| sock_data.addr.try_send(Resend))
-        // .map(|(_, sock_data)| sock_data.addr.send(Resend))
         .collect::<Vec<_>>();
 
     for sock in all_sockets {
-        // HANGS ON THIS AWAIT
         match sock {
             Ok(_) => {
                 println!("it sended")

@@ -7,12 +7,16 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::SqlitePool;
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::sync::Mutex;
 use time::{Duration as TimeDuration, OffsetDateTime};
 
 // MODS
-use crate::common::{SessionID, SocketId, COOKIE_NAME};
-use crate::dto::{CookieStruct, OpenSocketData, SessionData};
+use crate::dto::{
+    CookieStruct, OpenSocketData, SessionData, SessionID, UniversalIdType, COOKIE_NAME,
+};
+
+use crate::socket_actor::resend_ws;
 
 // AUTH HANDLING
 #[derive(Serialize, Deserialize, Debug)]
@@ -50,7 +54,7 @@ pub async fn signup(
         Err(_) => {
             // SAVE THE USER_NAME, PW, SALT
             let config = Config::default();
-            let salt_gen = rand::thread_rng().gen::<[u8; 16]>();
+            let salt_gen: UniversalIdType = rand::thread_rng().gen::<UniversalIdType>();
             let salt: &[u8] = &salt_gen[..];
             let password_hash = argon2::hash_encoded(password.as_bytes(), &salt, &config).unwrap();
             sqlx::query!(
@@ -78,7 +82,7 @@ pub fn login_process(
     let mut session_table = session_table_ref.lock().unwrap();
 
     // CREATE SESSION ID
-    let id = rand::thread_rng().gen::<[u8; 16]>();
+    let id: UniversalIdType = rand::thread_rng().gen::<UniversalIdType>();
     let encoded_session_id = base64::encode(id);
 
     // BASIC CLEANUP
@@ -163,7 +167,7 @@ pub async fn login(
 pub async fn logout(
     req: HttpRequest,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
-    // open_sockets_data: web::Data<Mutex<HashMap<SocketId, OpenSocketData>>>,
+    open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) -> HttpResponse {
     let cookie_option = req.cookie(COOKIE_NAME);
     match cookie_option {
@@ -176,8 +180,18 @@ pub async fn logout(
                 serde_json::from_str(value).expect("parsing cookie error");
             session_table.remove_entry(&cookie_data.id);
 
-            // TODO REMOVE SOCKET FROM OPEN SOCKETS TO UPDATE OTHER USERS
-            // let open_sockets_data_ref = open_sockets_data.get_ref();
+            let decoded_id_vec = base64::decode(&cookie_data.id).unwrap();
+            let decoded_id: UniversalIdType = decoded_id_vec.as_slice().try_into().unwrap();
+
+            // REMOVE CURRENT SOCKET FROM SOCKETS
+            let open_sockets_data_ref = open_sockets_data.get_ref();
+            open_sockets_data_ref
+                .lock()
+                .unwrap()
+                .remove_entry(&decoded_id);
+
+            // SEND A REFRESH TO OTHER WS ACTORS TO UPDATE THEIR USER LIST IMMEDIATELY
+            resend_ws(open_sockets_data.clone()).await;
 
             // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
             let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())

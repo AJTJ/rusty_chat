@@ -17,8 +17,7 @@ use std::sync::Mutex;
 
 // MODS
 use rusty_chat::auth::{login, logout, signup};
-use rusty_chat::common::{SessionID, SocketId};
-use rusty_chat::dto::{OpenSocketData, SessionData};
+use rusty_chat::dto::{OpenSocketData, SessionData, SessionID, UniversalIdType};
 use rusty_chat::socket_actor::ws_index;
 
 // UNUSED
@@ -60,7 +59,7 @@ async fn main() -> std::io::Result<()> {
     }
 
     // OPEN SOCKETS DATA
-    let socket_data_hashmap: HashMap<SocketId, OpenSocketData> = HashMap::new();
+    let socket_data_hashmap: HashMap<UniversalIdType, OpenSocketData> = HashMap::new();
     let open_sockets_data = web::Data::new(Mutex::new(socket_data_hashmap));
 
     // SESSION TABLE

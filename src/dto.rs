@@ -47,11 +47,18 @@ pub struct ResponseToClient {
     pub all_online_users: Vec<String>,
 }
 
+// SOCKET THINGS
+pub type UniversalIdType = [u8; 32];
 #[derive(Debug)]
 pub struct OpenSocketData {
     pub addr: Addr<WebSocketActor>,
     pub user_name: String,
 }
+
+// NOTE: SESSION ID AND COOKIE ID ARE THE SAME THING
+
+// SESSION THINGS
+pub type SessionID = String;
 
 #[derive(Debug)]
 pub struct SessionData {
@@ -60,6 +67,7 @@ pub struct SessionData {
 }
 
 // SHARED COOKIE THINGS
+pub const COOKIE_NAME: &str = "rusty_cookie";
 #[derive(Serialize, Deserialize, Debug)]
 pub struct CookieStruct {
     pub id: String,
