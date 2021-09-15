@@ -7,7 +7,6 @@ use actix_web_actors::ws::{self, WebsocketContext};
 
 // UTILS
 use chrono::{prelude::*, Duration};
-use rand::Rng;
 
 // SERDE
 
