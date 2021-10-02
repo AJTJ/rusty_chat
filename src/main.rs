@@ -21,7 +21,7 @@ use rusty_chat::dto::{OpenSocketData, SessionData, SessionID, UniversalIdType};
 use rusty_chat::socket_actor::ws_index;
 
 // UNUSED
-// use actix_cors::Cors;
+use actix_cors::Cors;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -29,7 +29,7 @@ async fn main() -> std::io::Result<()> {
     // ENV
     dotenv().ok();
     let dev_key = "DEVELOPMENT";
-    let env_dev = var(dev_key);
+    // let env_dev = var(dev_key);
 
     let db_key = "DATABASE_URL";
     let env_db = var(db_key).unwrap();
@@ -40,23 +40,23 @@ async fn main() -> std::io::Result<()> {
     let env_local_url_slice: &str = &*env_local_url;
     println!("Serving at: {}", env_local_url_slice);
 
-    match env_dev {
-        Ok(_) => {
-            println!("in dev: hot reloading activated");
-            // HOT RELOADING
-            let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
-            hotwatch
-                .watch("./chat_socket/build", |event: Event| {
-                    if let Event::Write(_path) = event {
-                        println!("Changes in front-end");
-                    }
-                })
-                .expect("failed to watch file!");
-        }
-        Err(_) => {
-            println!("not in dev")
-        }
-    }
+    // match env_dev {
+    //     Ok(_) => {
+    //         println!("in dev: hot reloading activated");
+    //         // HOT RELOADING
+    //         let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
+    //         hotwatch
+    //             .watch("./chat_socket/build", |event: Event| {
+    //                 if let Event::Write(_path) = event {
+    //                     println!("Changes in front-end");
+    //                 }
+    //             })
+    //             .expect("failed to watch file!");
+    //     }
+    //     Err(_) => {
+    //         println!("not in dev")
+    //     }
+    // }
 
     // OPEN SOCKETS DATA
     let socket_data_hashmap: HashMap<UniversalIdType, OpenSocketData> = HashMap::new();
@@ -75,7 +75,9 @@ async fn main() -> std::io::Result<()> {
     let shared_db_pool = web::Data::new(db_pool);
 
     HttpServer::new(move || {
+        let cors = Cors::permissive();
         App::new()
+            .wrap(cors)
             .wrap(Logger::default())
             // DATA
             .app_data(shared_db_pool.clone())
@@ -86,7 +88,7 @@ async fn main() -> std::io::Result<()> {
             .route("/login/", web::post().to(login))
             .route("/logout/", web::get().to(logout))
             .route("/ws/", web::get().to(ws_index))
-            .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
+        // .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
     })
     .bind(env_local_url_slice)?
     .run()

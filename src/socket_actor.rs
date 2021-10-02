@@ -136,7 +136,7 @@ pub async fn ws_index(
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
     let cookie_option = req.cookie(COOKIE_NAME);
-
+    println!("in index bb");
     // CHECK IF THERE IS A COOKIE
     match cookie_option {
         Some(cookie) => {
@@ -185,7 +185,10 @@ pub async fn ws_index(
             response
         }
         // NO COOKIE NO SOCKET
-        None => Ok(HttpResponse::Ok().finish()),
+        None => {
+            println!("no cookie");
+            Ok(HttpResponse::Ok().finish())
+        }
     }
 }
 

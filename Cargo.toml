@@ -27,6 +27,6 @@ actix-session = "0.4.1"
 base64 = "0.13.0"
 cookie = "0.14"
 time = "0.2.27"
+actix-cors = "0.5.4"
 
-# actix-cors = "0.5.4"
 # notify = "4.0.17"

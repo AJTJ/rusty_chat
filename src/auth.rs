@@ -89,9 +89,9 @@ pub fn login_process(
     session_table.retain(|_, session| session.expiry > Utc::now().naive_utc());
 
     // CHECK IF SIGNED IN ELSEWHERE/ALREADY
-    if session_table.values().any(|x| &x.user_name == user_name) {
-        return HttpResponse::Ok().body(json!(format!("{} is already signed in", user_name)));
-    };
+    // if session_table.values().any(|x| &x.user_name == user_name) {
+    //     return HttpResponse::Ok().body(json!(format!("{} is already signed in", user_name)));
+    // };
 
     // IF A COOKIE IS PRESENT - REMOVE IT FROM SESSION
     let cookie_option = req.cookie(COOKIE_NAME);
@@ -119,8 +119,9 @@ pub fn login_process(
     };
     let cookie = cookie::Cookie::build(COOKIE_NAME, json!(cookie_values).to_string())
         .path("/")
-        .secure(false)
+        .secure(true)
         .max_age(TimeDuration::minutes(30))
+        .same_site(cookie::SameSite::None)
         .http_only(true)
         .finish();
 
