@@ -1,10 +1,10 @@
 // ACTIX
-use actix_files as fs;
+// use actix_files as fs;
 use actix_web::{middleware::Logger, web, App, HttpServer};
 
 // UTILS
 use dotenv::{dotenv, var};
-use hotwatch::{Event, Hotwatch};
+// use hotwatch::{Event, Hotwatch};
 
 // SERDE
 
@@ -25,10 +25,10 @@ use actix_cors::Cors;
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("Server running");
+    // println!("Server running");
     // ENV
     dotenv().ok();
-    let dev_key = "DEVELOPMENT";
+    let _dev_key = "DEVELOPMENT";
     // let env_dev = var(dev_key);
 
     let db_key = "DATABASE_URL";

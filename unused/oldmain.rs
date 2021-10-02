@@ -194,7 +194,7 @@ impl WebSocketActor {
             // check client heartbeats
             if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
                 // heartbeat timed out
-                println!("Websocket Client heartbeat failed, disconnecting!");
+                // println!("Websocket Client heartbeat failed, disconnecting!");
                 self::WebsocketContext::stop(ctx);
                 return;
             }
@@ -631,7 +631,7 @@ async fn logout(
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    println!("Server running");
+    // println!("Server running");
     // ENV
     dotenv().ok();
     let dev_key = "DEVELOPMENT";
@@ -643,7 +643,7 @@ async fn main() -> std::io::Result<()> {
 
     match env_dev {
         Ok(_) => {
-            println!("in dev: hot reloading activated");
+            // println!("in dev: hot reloading activated");
             // HOT RELOADING
             let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
             hotwatch

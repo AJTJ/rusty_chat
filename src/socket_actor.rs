@@ -97,7 +97,7 @@ struct Resend;
 impl Handler<Resend> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
     fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        println!("got resend msg: {}", self.signed_in_user);
+        // println!("got resend msg: {}", self.signed_in_user);
         get_update_string(
             self.signed_in_user.to_string(),
             false,
@@ -118,7 +118,7 @@ impl WebSocketActor {
             // check client heartbeats
             if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
                 // heartbeat timed out
-                println!("Websocket Client heartbeat failed, disconnecting!");
+                // println!("Websocket Client heartbeat failed, disconnecting!");
                 self::WebsocketContext::stop(ctx);
                 return;
             }
@@ -136,7 +136,7 @@ pub async fn ws_index(
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
 ) -> Result<HttpResponse, Error> {
     let cookie_option = req.cookie(COOKIE_NAME);
-    println!("in index bb");
+    // println!("in index bb");
     // CHECK IF THERE IS A COOKIE
     match cookie_option {
         Some(cookie) => {
@@ -186,7 +186,7 @@ pub async fn ws_index(
         }
         // NO COOKIE NO SOCKET
         None => {
-            println!("no cookie");
+            // println!("no cookie");
             Ok(HttpResponse::Ok().finish())
         }
     }
@@ -378,7 +378,7 @@ pub async fn resend_ws(
     for sock in all_sockets {
         match sock {
             Ok(_) => {
-                println!("it sended")
+                // println!("it sended")
             }
             Err(err) => println!("Got resend error: {:?}", err),
         }
