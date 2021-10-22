@@ -1,12 +1,7 @@
-FROM rust:1.55
+FROM rust as builder
 
-ENV DATABASE_URL=sqlite://./chat.db
-ENV LOCAL_URL=127.0.0.1:8081
+RUN cargo build --release
 
-WORKDIR /usr/src/myapp
-
-COPY . .
-
-RUN cargo install --path .
-
-CMD ["rusty_chat"]
+FROM bitnami/minideb as runner
+COPY --from=builder /app/target/release/app /app
+CMD /app

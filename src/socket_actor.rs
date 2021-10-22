@@ -302,6 +302,13 @@ async fn chat_handler(
     .await
     .expect("query insert message error");
 
+    sqlx::query!(
+        r#"DELETE FROM message WHERE id IN (SELECT id FROM message ORDER BY id DESC LIMIT -1 OFFSET 100)"#
+    )
+    .execute(db_pool.get_ref())
+    .await
+    .expect("delete old messages error");
+
     let all_messages_json = get_all_messages_json(db_pool.clone()).await;
 
     let open_sockets_data_ref = open_sockets_data.get_ref();
@@ -328,7 +335,7 @@ async fn chat_handler(
 // GET ALL MSGES FROM DB
 async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
-      sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC LIMIT 50")
+      sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC")
           .fetch_all(db_pool.get_ref())
           .await
           .expect("all messages failure");
