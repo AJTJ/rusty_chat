@@ -28,17 +28,25 @@ async fn main() -> std::io::Result<()> {
     // println!("Server running");
     // ENV
     dotenv().ok();
-    let _dev_key = "DEVELOPMENT";
-    // let env_dev = var(dev_key);
+    let dev_key = "DEVELOPMENT";
+    let env_dev = var(dev_key);
 
     let db_key = "DATABASE_URL";
     let env_db = var(db_key).unwrap();
     let env_db_slice: &str = &*env_db;
 
-    let local_url = "LOCAL_URL";
-    let env_local_url = var(local_url).unwrap();
-    let env_local_url_slice: &str = &*env_local_url;
-    println!("Serving at: {}", env_local_url_slice);
+    let mut local_url = "0.0.0.0:8081".to_string();
+    match env_dev {
+        Ok(x) => {
+            local_url = x;
+        }
+        Err(_) => {}
+    }
+
+    // let local_url = "LOCAL_URL";
+    // let env_local_url = var(local_url).unwrap();
+    // let env_local_url_slice: &str = &*env_local_url;
+    println!("Serving at: {}", &local_url);
 
     // match env_dev {
     //     Ok(_) => {
@@ -90,7 +98,7 @@ async fn main() -> std::io::Result<()> {
             .route("/ws/", web::get().to(ws_index))
         // .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
     })
-    .bind(env_local_url_slice)?
+    .bind(&local_url)?
     .run()
     .await
 }
