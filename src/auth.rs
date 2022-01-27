@@ -39,7 +39,7 @@ pub async fn signup(
     let password = body_json.password;
 
     if user_name.is_empty() || password.is_empty() {
-        return HttpResponse::Ok().body(json!(format!("Please type a name/password")));
+        return HttpResponse::Ok().body(json!("Please type a name/password".to_string()));
     }
 
     // CHECK FOR USER IN DB
@@ -49,14 +49,14 @@ pub async fn signup(
 
     match user {
         // USER EXISTS -> EXIT
-        Ok(_) => HttpResponse::Ok().body(json!(format!("User already exists"))),
+        Ok(_) => HttpResponse::Ok().body(json!("User already exists".to_string())),
         // NO USER -> SIGNUP & SIGNIN
         Err(_) => {
             // SAVE THE USER_NAME, PW, SALT
             let config = Config::default();
             let salt_gen: UniversalIdType = rand::thread_rng().gen::<UniversalIdType>();
             let salt: &[u8] = &salt_gen[..];
-            let password_hash = argon2::hash_encoded(password.as_bytes(), &salt, &config).unwrap();
+            let password_hash = argon2::hash_encoded(password.as_bytes(), salt, &config).unwrap();
             sqlx::query!(
                 r#"INSERT INTO user (name, hash, salt) VALUES ($1, $2, $3)"#,
                 user_name,
@@ -76,7 +76,7 @@ pub async fn signup(
 pub fn login_process(
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
-    user_name: &String,
+    user_name: &str,
 ) -> HttpResponse {
     let session_table_ref = session_table_data.get_ref();
     let mut session_table = session_table_ref.lock().unwrap();
@@ -95,19 +95,16 @@ pub fn login_process(
 
     // IF A COOKIE IS PRESENT - REMOVE IT FROM SESSION
     let cookie_option = req.cookie(COOKIE_NAME);
-    match cookie_option {
-        Some(cookie) => {
-            let (_, value) = cookie.name_value();
-            let cookie_data: CookieStruct =
-                serde_json::from_str(value).expect("parsing cookie error");
-            session_table.remove_entry(&cookie_data.id);
-        }
-        None => {}
+
+    if let Some(cookie) = cookie_option {
+        let (_, value) = cookie.name_value();
+        let cookie_data: CookieStruct = serde_json::from_str(value).expect("parsing cookie error");
+        session_table.remove_entry(&cookie_data.id);
     }
 
     // ADD TO SESSION TABLE
     let current_session_data = SessionData {
-        user_name: user_name.clone(),
+        user_name: user_name.to_string(),
         expiry: Utc::now().naive_utc() + Duration::minutes(5),
     };
     session_table.insert(encoded_session_id.clone(), current_session_data);
@@ -115,7 +112,7 @@ pub fn login_process(
     // CREATE NEW COOKIE
     let cookie_values = CookieStruct {
         id: encoded_session_id,
-        user_name: user_name.clone(),
+        user_name: user_name.to_string(),
     };
     let cookie = cookie::Cookie::build(COOKIE_NAME, json!(cookie_values).to_string())
         .path("/")
@@ -125,8 +122,12 @@ pub fn login_process(
         .http_only(true)
         .finish();
 
+    println!("login process complete");
     // RETURN AND ADD/REWRITE COOKIE
-    HttpResponse::Ok().cookie(cookie).finish()
+
+    HttpResponse::Ok()
+        .cookie(cookie)
+        .body(json!("Welcome".to_string()))
 }
 
 // LOGIN
@@ -152,7 +153,10 @@ pub async fn login(
             let password_match = argon2::verify_encoded(&pw_hash, password.as_bytes()).unwrap();
             match password_match {
                 // CORRECT PW AND LOGIN
-                true => login_process(session_table_data, req, user_name),
+                true => {
+                    println!("correct user/pw combo: {}", &user_name);
+                    login_process(session_table_data, req, user_name)
+                }
                 // WRONG PASSWORD
                 false => HttpResponse::Ok().body(json!(format!(
                     "Password does not match the user: {}",
@@ -161,7 +165,9 @@ pub async fn login(
             }
         }
         // USER NOT IN DB
-        Err(_) => HttpResponse::Ok().body(json!(format!("User does not exist, please register."))),
+        Err(_) => {
+            HttpResponse::Ok().body(json!("User does not exist, please register.".to_string()))
+        }
     }
 }
 

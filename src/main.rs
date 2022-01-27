@@ -1,12 +1,8 @@
 // ACTIX
-// use actix_files as fs;
 use actix_web::{middleware::Logger, web, App, HttpServer};
 
 // UTILS
 use dotenv::{dotenv, var};
-// use hotwatch::{Event, Hotwatch};
-
-// SERDE
 
 // DB
 use sqlx::sqlite::SqlitePoolOptions;
@@ -36,35 +32,11 @@ async fn main() -> std::io::Result<()> {
     let env_db_slice: &str = &*env_db;
 
     let mut local_url = "0.0.0.0:8081".to_string();
-    match env_dev {
-        Ok(x) => {
-            local_url = x;
-        }
-        Err(_) => {}
+    if let Ok(x) = env_dev {
+        local_url = x;
     }
 
-    // let local_url = "LOCAL_URL";
-    // let env_local_url = var(local_url).unwrap();
-    // let env_local_url_slice: &str = &*env_local_url;
     println!("Serving at: {}", &local_url);
-
-    // match env_dev {
-    //     Ok(_) => {
-    //         println!("in dev: hot reloading activated");
-    //         // HOT RELOADING
-    //         let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
-    //         hotwatch
-    //             .watch("./chat_socket/build", |event: Event| {
-    //                 if let Event::Write(_path) = event {
-    //                     println!("Changes in front-end");
-    //                 }
-    //             })
-    //             .expect("failed to watch file!");
-    //     }
-    //     Err(_) => {
-    //         println!("not in dev")
-    //     }
-    // }
 
     // OPEN SOCKETS DATA
     let socket_data_hashmap: HashMap<UniversalIdType, OpenSocketData> = HashMap::new();
@@ -96,20 +68,39 @@ async fn main() -> std::io::Result<()> {
             .route("/login/", web::post().to(login))
             .route("/logout/", web::get().to(logout))
             .route("/ws/", web::get().to(ws_index))
-        // .service(fs::Files::new("/", "./chat_socket/build").index_file("./index.html"))
     })
     .bind(&local_url)?
     .run()
     .await
 }
 
+// PAST CORS NOTES
 // let cors = Cors::default()
-//             .allowed_origin("http://localhost:3000/")
-//             .supports_credentials()
-//             .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
-//             .allowed_methods(vec!["GET", "POST"])
-//             .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
-//             // .allowed_header(http::header::CONTENT_TYPE)
-//             .max_age(3600);
+//     .allowed_origin("http://localhost:3000/")
+//     .supports_credentials()
+//     .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
+//     .allowed_methods(vec!["GET", "POST"])
+//     .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
+//     // .allowed_header(http::header::CONTENT_TYPE)
+//     .max_age(3600);
 
-//             .wrap(cors)
+// HOT RELOADING WITH MONO-REPO
+// use hotwatch::{Event, Hotwatch};
+// use actix_files as fs;
+// match env_dev {
+//     Ok(_) => {
+//         println!("in dev: hot reloading activated");
+//         // HOT RELOADING
+//         let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
+//         hotwatch
+//             .watch("./chat_socket/build", |event: Event| {
+//                 if let Event::Write(_path) = event {
+//                     println!("Changes in front-end");
+//                 }
+//             })
+//             .expect("failed to watch file!");
+//     }
+//     Err(_) => {
+//         println!("not in dev")
+//     }
+// }

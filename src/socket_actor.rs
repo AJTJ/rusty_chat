@@ -168,21 +168,19 @@ pub async fn ws_index(
             let decoded_id: UniversalIdType = decoded_id_vec.as_slice().try_into().unwrap();
 
             // OPEN SOCKET
-            let response = ws::start(
+            ws::start(
                 WebSocketActor {
                     db_pool,
-                    open_sockets_data: open_sockets_data.clone(),
+                    open_sockets_data,
                     hb: Instant::now(),
                     session_table_data: session_table_data.clone(),
                     signed_in_user: cookie_data.user_name.clone(),
-                    session_id: cookie_data.id.clone(),
+                    session_id: cookie_data.id,
                     socket_id: decoded_id,
                 },
                 &req,
                 stream,
-            );
-
-            response
+            )
         }
         // NO COOKIE NO SOCKET
         None => {
