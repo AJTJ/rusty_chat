@@ -74,6 +74,8 @@ async fn main() -> std::io::Result<()> {
     .await
 }
 
+// changes to v2
+
 // PAST CORS NOTES
 // let cors = Cors::default()
 //     .allowed_origin("http://localhost:3000/")
