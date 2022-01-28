@@ -5,7 +5,8 @@ use actix_web::{middleware::Logger, web, App, HttpServer};
 use dotenv::{dotenv, var};
 
 // DB
-use sqlx::sqlite::SqlitePoolOptions;
+use diesel::pg::PgConnection;
+use diesel::r2d2::{self, ConnectionManager};
 
 // STD
 use std::collections::HashMap;
@@ -27,9 +28,9 @@ async fn main() -> std::io::Result<()> {
     let dev_key = "DEVELOPMENT";
     let env_dev = var(dev_key);
 
-    let db_key = "DATABASE_URL";
-    let env_db = var(db_key).unwrap();
-    let env_db_slice: &str = &*env_db;
+    // let db_key = "DATABASE_URL";
+    // let env_db = var(db_key).unwrap();
+    // let env_db_slice: &str = &*env_db;
 
     let mut local_url = "0.0.0.0:8081".to_string();
     if let Ok(x) = env_dev {
@@ -46,13 +47,12 @@ async fn main() -> std::io::Result<()> {
     let session_table_hashmap: HashMap<SessionID, SessionData> = HashMap::new();
     let session_table_data = web::Data::new(Mutex::new(session_table_hashmap));
 
-    // DB POOL
-    let db_pool = SqlitePoolOptions::new()
-        .max_connections(5)
-        .connect(env_db_slice)
-        .await
-        .expect("pool FAILURE");
-    let shared_db_pool = web::Data::new(db_pool);
+    // DATABASE
+    let connspec = var("DATABASE_URL").expect("DATABASE_URL");
+    let manager = ConnectionManager::<PgConnection>::new(connspec);
+    let shared_db_pool = r2d2::Pool::builder()
+        .build(manager)
+        .expect("Failed to create pool.");
 
     HttpServer::new(move || {
         let cors = Cors::permissive();
@@ -73,36 +73,3 @@ async fn main() -> std::io::Result<()> {
     .run()
     .await
 }
-
-// changes to v2
-
-// PAST CORS NOTES
-// let cors = Cors::default()
-//     .allowed_origin("http://localhost:3000/")
-//     .supports_credentials()
-//     .allowed_origin_fn(|origin, _req_head| origin.as_bytes().ends_with(b".rust-lang.org"))
-//     .allowed_methods(vec!["GET", "POST"])
-//     .allowed_headers(vec![http::header::AUTHORIZATION, http::header::ACCEPT])
-//     // .allowed_header(http::header::CONTENT_TYPE)
-//     .max_age(3600);
-
-// HOT RELOADING WITH MONO-REPO
-// use hotwatch::{Event, Hotwatch};
-// use actix_files as fs;
-// match env_dev {
-//     Ok(_) => {
-//         println!("in dev: hot reloading activated");
-//         // HOT RELOADING
-//         let mut hotwatch = Hotwatch::new().expect("hotwatch failed to initialize!");
-//         hotwatch
-//             .watch("./chat_socket/build", |event: Event| {
-//                 if let Event::Write(_path) = event {
-//                     println!("Changes in front-end");
-//                 }
-//             })
-//             .expect("failed to watch file!");
-//     }
-//     Err(_) => {
-//         println!("not in dev")
-//     }
-// }

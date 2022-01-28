@@ -28,5 +28,5 @@ base64 = "0.13.0"
 cookie = "0.14"
 time = "0.2.27"
 actix-cors = "0.5.4"
-
-# notify = "4.0.17"
+# database things
+diesel = { version = "1.4.4", features = ["postgres", "r2d2", "numeric", "uuidv07", "chrono"] }

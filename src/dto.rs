@@ -49,7 +49,7 @@ pub struct ResponseToClient {
 
 // SOCKET THINGS
 pub type UniversalIdType = [u8; 32];
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct OpenSocketData {
     pub addr: Addr<WebSocketActor>,
     pub user_name: String,

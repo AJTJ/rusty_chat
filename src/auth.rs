@@ -2,10 +2,11 @@ use actix_web::HttpMessage;
 use actix_web::{cookie, web, HttpRequest, HttpResponse};
 use argon2::{self, Config};
 use chrono::{prelude::*, Duration};
+use diesel::pg::PgConnection;
+use diesel::r2d2::{self, ConnectionManager};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::convert::TryInto;
 use std::sync::Mutex;
@@ -18,6 +19,8 @@ use crate::dto::{
 
 use crate::socket_actor::resend_ws;
 
+type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
+
 // AUTH HANDLING
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SignInSignUp {
@@ -28,7 +31,7 @@ pub struct SignInSignUp {
 // SIGN UP
 pub async fn signup(
     req_body: String,
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
 ) -> HttpResponse {
@@ -133,7 +136,7 @@ pub fn login_process(
 // LOGIN
 pub async fn login(
     req_body: String,
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
     req: HttpRequest,
 ) -> HttpResponse {

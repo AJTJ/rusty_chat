@@ -12,7 +12,8 @@ use chrono::{prelude::*, Duration};
 
 use serde_json::{json, Value};
 // DB
-use sqlx::SqlitePool;
+use diesel::pg::PgConnection;
+use diesel::r2d2::{self, ConnectionManager};
 
 // STD
 use std::collections::HashMap;
@@ -33,12 +34,12 @@ use crate::dto::{
     SessionData, SessionID, UniversalIdType, COOKIE_NAME,
 };
 
-//
+type DbPool = r2d2::Pool<ConnectionManager<PgConnection>>;
 
 // WS ACTOR DECLARATION
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct WebSocketActor {
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
     hb: Instant,
     session_table_data: web::Data<Mutex<HashMap<SessionID, SessionData>>>,
@@ -129,7 +130,7 @@ impl WebSocketActor {
 
 // WEBSOCKET INDEX HANDLING
 pub async fn ws_index(
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     req: HttpRequest,
     stream: web::Payload,
     open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
@@ -259,7 +260,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
 // WEBSOCKET CHAT HANDLING
 async fn chat_handler(
     received_client_message: String,
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     signed_in_user: String,
     open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) -> String {
@@ -331,7 +332,7 @@ async fn chat_handler(
 
 // UTILITY FUNCTIONS
 // GET ALL MSGES FROM DB
-async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
+async fn get_all_messages_json(db_pool: web::Data<DbPool>) -> Value {
     let all_messages: Vec<DatabaseMessage> =
       sqlx::query_as!(DatabaseMessage, "SELECT message.id, user_id, room_id, message, time, name FROM message INNER JOIN user on user.id=message.user_id ORDER BY time DESC")
           .fetch_all(db_pool.get_ref())
@@ -345,7 +346,7 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
 async fn get_update_string(
     signed_in_user: String,
     is_update: bool,
-    db_pool: web::Data<SqlitePool>,
+    db_pool: web::Data<DbPool>,
     open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) -> String {
     // GET ONLINE USERS
