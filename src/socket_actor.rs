@@ -267,7 +267,6 @@ async fn chat_handler(
     let from_client: FromClient = serde_json::from_str(&received_client_message)
         .expect("parsing received_client_message msg");
 
-    let default_room = "lobby".to_string();
     let id = signed_in_user;
 
     // ADD TO MESSAGES
@@ -275,11 +274,6 @@ async fn chat_handler(
         .fetch_one(db_pool.get_ref())
         .await
         .expect("user_id_record not found");
-
-    let room_id_record = sqlx::query!(r#"SELECT id FROM room WHERE name=$1"#, default_room)
-        .fetch_one(db_pool.get_ref())
-        .await
-        .expect("room_id_record not found");
 
     let message_to_db = MessageToDatabase {
         user_id: user_id_record.id,
