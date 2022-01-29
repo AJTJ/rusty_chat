@@ -10,6 +10,13 @@ use serde::{Deserialize, Serialize};
 // MODS
 use crate::socket_actor::WebSocketActor;
 
+#[derive(Serialize, Deserialize)]
+pub enum ResponseType {
+    MessageUpdate,
+    UsersUpdate,
+    FullUpdate,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct DatabaseMessage {
     pub id: i64,
@@ -38,13 +45,25 @@ pub struct FromClient {
     pub message: String,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct ResponseToClient {
+#[derive(Serialize, Deserialize)]
+pub struct FullUpdateToClient {
     pub user_name: String,
     pub all_messages: String,
     pub message_to_client: String,
     pub is_update: bool,
     pub all_online_users: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct MessageUpdateToClient {
+    pub message: String,
+    pub response_type: ResponseType,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct UsersUpdateToClient {
+    pub users: String,
+    pub response_type: ResponseType,
 }
 
 // SOCKET THINGS

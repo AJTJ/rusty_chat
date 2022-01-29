@@ -29,8 +29,8 @@ pub const CLIENT_TIMEOUT: StdDuration = StdDuration::from_secs(10);
 // MODS
 
 use crate::dto::{
-    CookieStruct, DatabaseMessage, FromClient, MessageToDatabase, OpenSocketData, ResponseToClient,
-    SessionData, SessionID, UniversalIdType, COOKIE_NAME,
+    CookieStruct, DatabaseMessage, FromClient, FullUpdateToClient, MessageToDatabase,
+    OpenSocketData, SessionData, SessionID, UniversalIdType, COOKIE_NAME,
 };
 
 //
@@ -66,8 +66,8 @@ impl Actor for WebSocketActor {
             .unwrap()
             .insert(self.socket_id, socket_data);
 
-        // UPDATE OTHER SOCKETS WITH NEW SOCKET PRESENT
-        resend_ws(self.open_sockets_data.clone())
+        // TODO: CHANGE TO USERSUPDATE
+        incremental_update(self.open_sockets_data.clone())
             .into_actor(self)
             .map(|_, _, _| {})
             .wait(ctx);
@@ -88,17 +88,19 @@ impl Actor for WebSocketActor {
     fn stopped(&mut self, _: &mut Self::Context) {}
 }
 
-// RESEND MESSAGE
+// INITIAL UPDATE MESSAGE
 #[derive(Message)]
 #[rtype(result = "Result<bool, std::io::Error>")]
-struct Resend;
+struct IncrementalUpdate {
+    message: String,
+}
 
-// RESEND MESSAGE HANDLER FOR UPDATING WS
-impl Handler<Resend> for WebSocketActor {
+// INITIAL UPDATE HANDLER FOR UPDATING WS
+impl Handler<IncrementalUpdate> for WebSocketActor {
     type Result = Result<bool, std::io::Error>;
-    fn handle(&mut self, _: Resend, ctx: &mut WebsocketContext<Self>) -> Self::Result {
-        // println!("got resend msg: {}", self.signed_in_user);
-        get_update_string(
+    fn handle(&mut self, _: IncrementalUpdate, ctx: &mut WebsocketContext<Self>) -> Self::Result {
+        // println!("got initial update msg: {}", self.signed_in_user);
+        get_full_update_string(
             self.signed_in_user.to_string(),
             false,
             self.db_pool.clone(),
@@ -213,7 +215,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
                 Ok(ws::Message::Pong(_)) => {
                     self.hb = Instant::now();
                     // UPDATE ON HEARTBEAT
-                    get_update_string(
+                    get_full_update_string(
                         self.signed_in_user.to_string(),
                         false,
                         self.db_pool.clone(),
@@ -242,7 +244,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocketActor {
     }
 
     fn started(&mut self, ctx: &mut Self::Context) {
-        get_update_string(
+        get_full_update_string(
             self.signed_in_user.to_string(),
             false,
             self.db_pool.clone(),
@@ -317,14 +319,17 @@ async fn chat_handler(
         .map(|(_, add)| add.user_name.clone())
         .collect::<Vec<_>>();
 
-    let response_struct = ResponseToClient {
+    // TODO: CHANGE TO INCREMENTAL UPDATE FOR OTHER CLIENTS
+    let response_struct = FullUpdateToClient {
         user_name: id,
         all_messages: all_messages_json.to_string(),
         message_to_client: "".to_string(),
         is_update: false,
         all_online_users: all_socket_users,
     };
-    resend_ws(open_sockets_data).await;
+
+    // TODO: CHANGE TO INCREMENTAL UPDATE FOR OTHER CLIENTS
+    incremental_update(open_sockets_data).await;
 
     json!(response_struct).to_string()
 }
@@ -342,7 +347,7 @@ async fn get_all_messages_json(db_pool: web::Data<SqlitePool>) -> Value {
 }
 
 // CREATE UPDATE FOR SOCKET
-async fn get_update_string(
+async fn get_full_update_string(
     signed_in_user: String,
     is_update: bool,
     db_pool: web::Data<SqlitePool>,
@@ -358,7 +363,7 @@ async fn get_update_string(
         .collect::<Vec<_>>();
 
     let all_messages = get_all_messages_json(db_pool).await;
-    let response = ResponseToClient {
+    let response = FullUpdateToClient {
         user_name: signed_in_user,
         all_messages: all_messages.to_string(),
         message_to_client: "".to_string(),
@@ -369,7 +374,7 @@ async fn get_update_string(
 }
 
 // GET NEW MESSAGES ON MSG SENT
-pub async fn resend_ws(
+pub async fn incremental_update(
     open_sockets_data: web::Data<Mutex<HashMap<UniversalIdType, OpenSocketData>>>,
 ) {
     let open_sockets_data_ref = open_sockets_data.get_ref();
@@ -377,7 +382,11 @@ pub async fn resend_ws(
         .lock()
         .unwrap()
         .iter()
-        .map(|(_, sock_data)| sock_data.addr.try_send(Resend))
+        .map(|(_, sock_data)| {
+            sock_data.addr.try_send(IncrementalUpdate {
+                message: "placeholder_msg".to_string(),
+            })
+        })
         .collect::<Vec<_>>();
 
     for sock in all_sockets {

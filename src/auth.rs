@@ -16,7 +16,8 @@ use crate::dto::{
     CookieStruct, OpenSocketData, SessionData, SessionID, UniversalIdType, COOKIE_NAME,
 };
 
-use crate::socket_actor::resend_ws;
+// TODO: Change to an incremental update
+use crate::socket_actor::incremental_update;
 
 // AUTH HANDLING
 #[derive(Serialize, Deserialize, Debug)]
@@ -198,7 +199,7 @@ pub async fn logout(
                 .remove_entry(&decoded_id);
 
             // SEND A REFRESH TO OTHER WS ACTORS TO UPDATE THEIR USER LIST IMMEDIATELY
-            resend_ws(open_sockets_data.clone()).await;
+            incremental_update(open_sockets_data.clone()).await;
 
             // REMOVE COOKIE BY REPLACING WITH ALREADY EXPIRED COOKIE
             let cookie = cookie::Cookie::build(COOKIE_NAME, "should_be_expired".to_string())
